@@ -1,0 +1,16 @@
+# Python & Virtual Env
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# PyInstaller build outputs
+build/
+dist/
+
+# Secret service role keys or temporary local uploads
+.env.service_role
+user_uploads/
+.hikehub_local_store.json
