@@ -167,17 +167,17 @@ ApplicationWindow {
         }
     }
 
-    // Floating Toast Notification
+    // Centered Modal HUD Toast Notification (Centered per UX specification)
     Rectangle {
         id: toastBanner
         property string message: ""
-        width: Math.min(parent.width - 32, toastText.implicitWidth + 32)
-        height: 40
-        radius: 20
-        color: "#E61C1C1E"
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.top: parent.top
-        anchors.topMargin: 18
+        width: Math.min(parent.width - 48, Math.max(210, toastText.implicitWidth + 44))
+        height: 76
+        radius: 18
+        color: "#F01C1C1E"
+        border.color: "#33FFFFFF"
+        border.width: 1
+        anchors.centerIn: parent
         visible: opacity > 0
         opacity: 0
         z: 999

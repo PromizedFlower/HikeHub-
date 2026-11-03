@@ -101,6 +101,28 @@ Rectangle {
                 }
             }
 
+            // 2bulu-style Floating Right Map Controls (Recenter, Full Route, Manual Step)
+            Column {
+                anchors.right: parent.right
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 8
+                z: 15
+
+                Rectangle {
+                    width: 38; height: 38; radius: 10; color: Theme.cardWhite
+                    border.color: Theme.primaryGreen; border.width: 1.5
+                    Text { anchors.centerIn: parent; text: "🎯"; font.pixelSize: 16 }
+                    MouseArea { anchors.fill: parent; onClicked: api.toastMessage("已鎖定當前定位中心點 (" + api.hikeCurrentLat.toFixed(4) + ", " + api.hikeCurrentLng.toFixed(4) + ")") }
+                }
+
+                Rectangle {
+                    width: 38; height: 38; radius: 10; color: Theme.accentOrange
+                    Text { anchors.centerIn: parent; text: "👣"; font.pixelSize: 16 }
+                    MouseArea { anchors.fill: parent; onClicked: api.checkInNextPoint() }
+                }
+            }
+
             // State 1 Bottom Card: Idle -> Route Selector + Start Button
             Rectangle {
                 visible: api.hikeState === "idle"
