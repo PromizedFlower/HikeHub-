@@ -22,8 +22,24 @@ from typing import Any, Dict, List, Optional
 try:
     from dotenv import load_dotenv
 except ImportError:
-    def load_dotenv(*args, **kwargs):
-        return False
+    def load_dotenv(dotenv_path=None, *args, **kwargs):
+        """Minimal .env parser fallback (no python-dotenv dependency)."""
+        path = Path(str(dotenv_path)) if dotenv_path else None
+        if path is None or not path.exists():
+            return False
+        try:
+            for raw in path.read_text(encoding="utf-8-sig").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key:
+                    os.environ.setdefault(key, value)
+            return True
+        except OSError:
+            return False
 
 try:
     from supabase import create_client, Client

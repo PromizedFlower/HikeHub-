@@ -3,66 +3,101 @@
 -- Project: COMP 7510 Group Project
 -- Author: Member A (Data Architect)
 -- ============================================================================
+--
+-- 設計原則（v5）：開發期「公開讀 + 歸屬寫」。
+--   - 所有表對已登入 / 未登入用戶均可 SELECT（社群動態本就公開）。
+--   - 寫入（INSERT/UPDATE/DELETE）一律要求 auth.uid() 歸屬校驗，不允許匿名亂寫。
+--   - seed.sql 以 SQL Editor（owner 權限）執行，會繞過 RLS，不受本政策影響。
+-- 重跑安全：每條政策先 DROP POLICY IF EXISTS，可重複執行。
 
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.trails ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.trail_segments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.checkpoints ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.posts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.post_photos ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.comments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.likes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.favorites ENABLE ROW LEVEL SECURITY;
+-- 1. 啟用 RLS
+ALTER TABLE public.profiles        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.trails          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.trail_segments  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.checkpoints     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.posts           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.post_photos     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.comments        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.likes           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.favorites       ENABLE ROW LEVEL SECURITY;
 
--- Public read access for trails, segments, checkpoints, profiles, posts, photos, comments, likes, favorites
-CREATE POLICY "Public read profiles" ON public.profiles FOR SELECT USING (true);
-CREATE POLICY "Public read trails" ON public.trails FOR SELECT USING (true);
+-- 2. 公開讀取（所有表）
+DROP POLICY IF EXISTS "Public read profiles"       ON public.profiles;
+DROP POLICY IF EXISTS "Public read trails"         ON public.trails;
+DROP POLICY IF EXISTS "Public read trail_segments" ON public.trail_segments;
+DROP POLICY IF EXISTS "Public read checkpoints"    ON public.checkpoints;
+DROP POLICY IF EXISTS "Public read posts"          ON public.posts;
+DROP POLICY IF EXISTS "Public read post_photos"    ON public.post_photos;
+DROP POLICY IF EXISTS "Public read comments"       ON public.comments;
+DROP POLICY IF EXISTS "Public read likes"          ON public.likes;
+DROP POLICY IF EXISTS "Public read favorites"      ON public.favorites;
+
+CREATE POLICY "Public read profiles"       ON public.profiles       FOR SELECT USING (true);
+CREATE POLICY "Public read trails"         ON public.trails         FOR SELECT USING (true);
 CREATE POLICY "Public read trail_segments" ON public.trail_segments FOR SELECT USING (true);
-CREATE POLICY "Public read checkpoints" ON public.checkpoints FOR SELECT USING (true);
-CREATE POLICY "Public read posts" ON public.posts FOR SELECT USING (true);
-CREATE POLICY "Public read post_photos" ON public.post_photos FOR SELECT USING (true);
-CREATE POLICY "Public read comments" ON public.comments FOR SELECT USING (true);
-CREATE POLICY "Public read likes" ON public.likes FOR SELECT USING (true);
-CREATE POLICY "Public read favorites" ON public.favorites FOR SELECT USING (true);
+CREATE POLICY "Public read checkpoints"    ON public.checkpoints    FOR SELECT USING (true);
+CREATE POLICY "Public read posts"          ON public.posts          FOR SELECT USING (true);
+CREATE POLICY "Public read post_photos"    ON public.post_photos    FOR SELECT USING (true);
+CREATE POLICY "Public read comments"       ON public.comments       FOR SELECT USING (true);
+CREATE POLICY "Public read likes"          ON public.likes          FOR SELECT USING (true);
+CREATE POLICY "Public read favorites"      ON public.favorites      FOR SELECT USING (true);
 
--- Authenticated write policies (with anon fallback allowed for pre-seeded demo accounts in grading)
-CREATE POLICY "Users can update own profile" ON public.profiles
-    FOR UPDATE USING (auth.uid() = id OR auth.role() IN ('anon', 'authenticated'));
+-- 3. 歸屬寫入
 
-CREATE POLICY "Users can insert own profile" ON public.profiles
-    FOR INSERT WITH CHECK (auth.uid() = id OR auth.role() IN ('anon', 'authenticated'));
+-- profiles：只能管理自己的資料
+DROP POLICY IF EXISTS "Users can insert own profile" ON public.profiles;
+DROP POLICY IF EXISTS "Users can update own profile" ON public.profiles;
+CREATE POLICY "Users can insert own profile" ON public.profiles FOR INSERT WITH CHECK (auth.uid() = id);
+CREATE POLICY "Users can update own profile" ON public.profiles FOR UPDATE USING (auth.uid() = id);
 
-CREATE POLICY "Authenticated users can create posts" ON public.posts
-    FOR INSERT WITH CHECK (auth.uid() = author_id OR auth.role() IN ('anon', 'authenticated'));
+-- posts：作者管理自己的貼文
+DROP POLICY IF EXISTS "Users can create posts"     ON public.posts;
+DROP POLICY IF EXISTS "Authors can update own posts" ON public.posts;
+DROP POLICY IF EXISTS "Authors can delete own posts" ON public.posts;
+CREATE POLICY "Users can create posts"      ON public.posts FOR INSERT WITH CHECK (auth.uid() = author_id);
+CREATE POLICY "Authors can update own posts" ON public.posts FOR UPDATE USING (auth.uid() = author_id);
+CREATE POLICY "Authors can delete own posts" ON public.posts FOR DELETE USING (auth.uid() = author_id);
 
-CREATE POLICY "Authors can update own posts" ON public.posts
-    FOR UPDATE USING (auth.uid() = author_id OR auth.role() IN ('anon', 'authenticated'));
+-- post_photos：登入用戶可為貼文上傳圖片
+DROP POLICY IF EXISTS "Authenticated users can insert post photos" ON public.post_photos;
+CREATE POLICY "Authenticated users can insert post photos"
+  ON public.post_photos FOR INSERT WITH CHECK (auth.role() = 'authenticated');
 
-CREATE POLICY "Authors can delete own posts" ON public.posts
-    FOR DELETE USING (auth.uid() = author_id OR auth.role() IN ('anon', 'authenticated'));
+-- comments：作者管理自己的留言；貼文作者可更新（用於「採納」回答）
+DROP POLICY IF EXISTS "Users can create comments"        ON public.comments;
+DROP POLICY IF EXISTS "Authors can update comments"      ON public.comments;
+DROP POLICY IF EXISTS "Authors can delete comments"      ON public.comments;
+CREATE POLICY "Users can create comments" ON public.comments
+  FOR INSERT WITH CHECK (auth.uid() = author_id);
+CREATE POLICY "Authors can update comments" ON public.comments
+  FOR UPDATE USING (
+    auth.uid() = author_id
+    OR auth.uid() = (SELECT author_id FROM public.posts p WHERE p.id = post_id)
+  );
+CREATE POLICY "Authors can delete comments" ON public.comments
+  FOR DELETE USING (
+    auth.uid() = author_id
+    OR auth.uid() = (SELECT author_id FROM public.posts p WHERE p.id = post_id)
+  );
 
-CREATE POLICY "Authenticated users can insert post photos" ON public.post_photos
-    FOR INSERT WITH CHECK (auth.role() IN ('anon', 'authenticated'));
+-- likes：只能操作自己的按讚
+DROP POLICY IF EXISTS "Users can manage own likes" ON public.likes;
+CREATE POLICY "Users can manage own likes"
+  ON public.likes FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
-CREATE POLICY "Authenticated users can create comments" ON public.comments
-    FOR INSERT WITH CHECK (auth.uid() = author_id OR auth.role() IN ('anon', 'authenticated'));
+-- favorites：只能操作自己的收藏
+DROP POLICY IF EXISTS "Users can manage own favorites" ON public.favorites;
+CREATE POLICY "Users can manage own favorites"
+  ON public.favorites FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
-CREATE POLICY "Post author can update comment acceptance" ON public.comments
-    FOR UPDATE USING (auth.role() IN ('anon', 'authenticated'));
-
-CREATE POLICY "Users can toggle own likes" ON public.likes
-    FOR ALL USING (auth.uid() = user_id OR auth.role() IN ('anon', 'authenticated'));
-
-CREATE POLICY "Users can toggle own favorites" ON public.favorites
-    FOR ALL USING (auth.uid() = user_id OR auth.role() IN ('anon', 'authenticated'));
-
--- Storage bucket 'trail-photos' setup
+-- 4. Storage bucket 'trail-photos'
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('trail-photos', 'trail-photos', true)
 ON CONFLICT (id) DO NOTHING;
 
+DROP POLICY IF EXISTS "Public read trail-photos"     ON storage.objects;
+DROP POLICY IF EXISTS "Authenticated upload trail-photos" ON storage.objects;
 CREATE POLICY "Public read trail-photos" ON storage.objects
-    FOR SELECT USING (bucket_id = 'trail-photos');
-
+  FOR SELECT USING (bucket_id = 'trail-photos');
 CREATE POLICY "Authenticated upload trail-photos" ON storage.objects
-    FOR INSERT WITH CHECK (bucket_id = 'trail-photos');
+  FOR INSERT WITH CHECK (bucket_id = 'trail-photos' AND auth.role() = 'authenticated');

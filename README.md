@@ -50,13 +50,19 @@ pyinstaller build.spec --noconfirm
 
 ## 四、Supabase 資料庫初始化說明
 
-1. **已配置項目**：
-   - `SUPABASE_URL`: `https://cjqmeypqkxvnyojpyexw.supabase.co`
+1. **環境配置（新建獨立 HikeHub 專案）**：
+   - 在 Supabase 雲端新建專案後，於 `Project Settings → API` 複製 `Project URL` 與 `anon public key`，
+     填寫至 `.env.example`（已改為佔位符），再 `cp .env.example .env`。
    - `SUPABASE_BUCKET`: `trail-photos`
-2. 如需在全新 Supabase 專案重建資料表，請於 Supabase SQL Editor 依序執行：
+   - 詳細建庫與匯入步驟見 **`supabase/EXECUTE.md`**。
+2. **先建立 6 個可登入測試帳號**：`supabase/create_auth_users.ps1`（Auth Admin API）。
+   > 新版 Supabase 的 GoTrue 不認可用 SQL 直接寫入 `auth.users` 的帳號，必須走 Auth Admin API；
+   > 詳見 `supabase/EXECUTE.md` 步驟 0。
+3. 於 Supabase SQL Editor 依序執行（雲端手動貼上）：
    - `supabase/schema.sql`（建立 9 張表、外鍵、索引與計數器 Trigger）
    - `supabase/policies.sql`（啟用 RLS 策略與 Storage bucket 權限）
-   - `supabase/seed.sql`（寫入 6 個測試帳號 Profile、10 條香港經典行山路線含折線座標 `path`、24 個路段、22 個打卡點及社區種子貼文）
+   - `supabase/seed.sql`（寫入 6 個 Profile、10 條香港經典行山路線含折線座標 `path`、25 個路段、22 個打卡點及社區種子貼文）
+4. 驗證：於 SQL Editor 執行 `tests/verify_db.sql`，確認 9 張表行數、計數一致性與 RLS 讀取通過。
 3. **雙重連線韌性設計**：`app/backend/supabase_client.py` 啟動時會自動校驗 `.env` 中的 URL 與 JWT 簽名；若缺失 `.env` 會在登錄頁明確提示「請檢查 .env 配置」；若教室/評分環境網路受限或遠端未建表，會自動無縫切換至與 `seed.sql` 完全一致的本地持久化鏡像，確保所有頁面、篩選、打卡、發帖、點讚、評論與問答採納 100% 可交互。
 
 ---
