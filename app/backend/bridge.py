@@ -11,11 +11,15 @@ from PySide6.QtCore import QObject, Property, Signal, Slot, QTimer
 from app.backend.auth_service import AuthService
 from app.backend import trail_service, post_service, social_service
 from app.backend.location_service import DualLocationCoordinator
+from app.backend.remote_store import get_remote_store, OFFLINE_HINT
+from app.backend.supabase_client import get_db
+from app.backend.workers import run_in_background
 
 
 class ApiBridge(QObject):
     # Auth & Navigation Signals
     authChanged = Signal()
+    envStatusChanged = Signal()
     loginError = Signal(str)
     toastMessage = Signal(str)
     navigateToTabRequested = Signal(int)
@@ -50,6 +54,7 @@ class ApiBridge(QObject):
         self._my_fav_trails: List[Dict[str, Any]] = []
         self._my_fav_posts: List[Dict[str, Any]] = []
         self._profile_stats: Dict[str, int] = {"post_count": 0, "favorite_count": 0, "trip_count": 0}
+        self._trail_filter: tuple = ("全部", 0, "全部", "")
 
         # Hike session state ("idle" | "active" | "summary")
         self._hike_state: str = "idle"
@@ -68,6 +73,10 @@ class ApiBridge(QObject):
         self._timer.setInterval(1500)
         self._timer.timeout.connect(self._on_hike_timer_tick)
 
+        # Kick off the 9-table cloud refresh off the GUI thread before any
+        # mirror read, so the first paint never blocks on the network.
+        self._start_remote_sync()
+
         # Preload initial trail for StartPage preview
         all_t = trail_service.list_trails()
         if all_t:
@@ -76,6 +85,25 @@ class ApiBridge(QObject):
                 self._hike_current_lat = float(self._hike_trail["path"][0][0])
                 self._hike_current_lng = float(self._hike_trail["path"][0][1])
                 self._hike_remaining_path = self._hike_trail["path"]
+
+    def _start_remote_sync(self) -> None:
+        if not get_db().remote_online:
+            return
+        store = get_remote_store()
+        store.mark_sync_in_flight()
+        run_in_background(
+            store.sync_mirror,
+            self._on_remote_sync_done,
+            self._on_remote_sync_error,
+        )
+
+    def _on_remote_sync_done(self, success: bool) -> None:
+        if success:
+            self.refreshAll()
+            self.envStatusChanged.emit()
+
+    def _on_remote_sync_error(self, _message: str) -> None:
+        self.toastMessage.emit("雲端同步失敗，暫時使用本機鏡像")
 
     # -----------------------------------------------------------------------
     # Environment & Auth Properties / Slots
@@ -88,9 +116,13 @@ class ApiBridge(QObject):
     def currentUser(self) -> Dict[str, Any]:
         return self._auth.current_user or {}
 
-    @Property("QVariantMap", constant=True)
+    @Property("QVariantMap", notify=envStatusChanged)
     def envStatus(self) -> Dict[str, Any]:
         return self._auth.get_env_status()
+
+    @Property(bool, notify=envStatusChanged)
+    def isOfflineMode(self) -> bool:
+        return bool(self._auth.get_env_status().get("offline", True))
 
     @Property("QVariantList", constant=True)
     def presetAccounts(self) -> List[Dict[str, str]]:
@@ -104,7 +136,16 @@ class ApiBridge(QObject):
             return
         self.refreshAll()
         self.authChanged.emit()
-        self.toastMessage.emit(f"歡迎回來，{self._auth.current_user.get('nickname', '山友')}！")
+        self.envStatusChanged.emit()
+        nickname = (self._auth.current_user or {}).get("nickname", "山友")
+        if res.get("offline"):
+            reason = res.get("reason", "")
+            self.toastMessage.emit(
+                f"歡迎回來，{nickname}！{OFFLINE_HINT}"
+                + (f"（{reason}）" if reason else "")
+            )
+        else:
+            self.toastMessage.emit(f"歡迎回來，{nickname}！")
 
     @Slot()
     def signOut(self) -> None:
@@ -114,6 +155,7 @@ class ApiBridge(QObject):
             self._hike_state = "idle"
         self._auth.sign_out()
         self.authChanged.emit()
+        self.envStatusChanged.emit()
 
     @Slot(str, str, str)
     def updateProfile(self, nickname: str, bio: str, avatar_url: str) -> None:
@@ -122,7 +164,10 @@ class ApiBridge(QObject):
             self.authChanged.emit()
             self.refreshProfileData()
             self.refreshCommunity()
-            self.toastMessage.emit("個人資料已更新")
+            note = res.get("note", "")
+            self.toastMessage.emit(
+                "個人資料已更新" + (f"（{note}）" if note else "")
+            )
         else:
             self.toastMessage.emit(res.get("error", "更新失敗"))
 
@@ -167,6 +212,7 @@ class ApiBridge(QObject):
 
     @Slot(str, int, str, str)
     def filterTrails(self, region: str, difficulty: int, duration_bucket: str, keyword: str) -> None:
+        self._trail_filter = (region, difficulty, duration_bucket, keyword)
         uid = (self._auth.current_user or {}).get("id")
         self._trails = trail_service.list_trails(
             region=region,
@@ -181,6 +227,9 @@ class ApiBridge(QObject):
     def loadTrailDetail(self, trail_id: str) -> None:
         uid = (self._auth.current_user or {}).get("id")
         self._current_trail = trail_service.get_trail_detail(trail_id, current_user_id=uid)
+        if not self._current_trail:
+            self.trailDetailChanged.emit()
+            return
         # Also load related moments/trips for this trail
         self._current_trail["related_posts"] = post_service.list_posts(
             post_type="all", trail_id=trail_id, current_user_id=uid
@@ -248,6 +297,10 @@ class ApiBridge(QObject):
     def selectHikeTrail(self, trail_id: str) -> None:
         uid = (self._auth.current_user or {}).get("id")
         self._hike_trail = trail_service.get_trail_detail(trail_id, current_user_id=uid)
+        if not self._hike_trail:
+            self.toastMessage.emit("找不到該路線資料")
+            self.hikeSessionChanged.emit()
+            return
         path = self._hike_trail.get("path", [])
         if path:
             self._hike_current_lat = float(path[0][0])
@@ -310,53 +363,76 @@ class ApiBridge(QObject):
 
     @Slot(str)
     def addHikePhoto(self, photo_url: str) -> None:
-        chosen = photo_url.strip() if photo_url.strip() else self._hike_trail.get("cover_url", "")
-        if chosen:
-            self._hike_photos.append(chosen)
-            self.hikeSessionChanged.emit()
-            self.toastMessage.emit(f"已記錄沿途相片（共 {len(self._hike_photos)} 張）")
+        chosen = photo_url.strip()
+        if not chosen:
+            self.toastMessage.emit("請輸入相片網址或本機檔案路徑")
+            return
+        self._hike_photos.append(chosen)
+        self.hikeSessionChanged.emit()
+        self.toastMessage.emit(f"已記錄沿途相片（共 {len(self._hike_photos)} 張）")
 
     @Slot()
     def finishHike(self) -> None:
         self._timer.stop()
         self._loc.stop_session()
-        if self._hike_distance_km < 0.2:
-            self._hike_distance_km = float(self._hike_trail.get("distance_km", 5.0))
+        # Distance comes from the real tracking session; never substitute the
+        # route's nominal length when the user has not actually walked it.
         self._hike_state = "summary"
         self.hikeSessionChanged.emit()
 
     @Slot(bool, str)
     def completeHikeSettlement(self, publish_to_community: bool, note: str) -> None:
         uid = (self._auth.current_user or {}).get("id")
-        if uid and publish_to_community:
-            tname = self._hike_trail.get("name", "香港山徑")
-            body_text = note.strip() or (
-                f"完成【{tname}】行山打卡！全程 {self.hikeDistanceKm} km，"
-                f"耗時 {self.hikeDurationText}，成功打卡 {self.hikeCheckedCount}/{self.hikeTotalCheckpoints} 個路標點。"
-            )
-            post_service.create_post(
-                author_id=uid,
-                post_type="trip",
-                title=f"{tname} · 行山軌跡記錄",
-                body=body_text,
-                trail_id=self._hike_trail.get("id", "trail-01"),
-                photos=self._hike_photos or [self._hike_trail.get("cover_url", "")],
-                tags=["行山記錄", self._hike_trail.get("region", "香港行山")],
-                trip_meta={
-                    "distance_km": self.hikeDistanceKm,
-                    "duration_sec": self._hike_elapsed_sec,
-                    "ascent_m": self._hike_trail.get("ascent_m", 300),
-                    "checked_count": self.hikeCheckedCount,
-                    "total_checkpoints": self.hikeTotalCheckpoints,
-                    "path": self._hike_walked_path or self._hike_trail.get("path", []),
-                },
-            )
-            self.refreshCommunity()
-            self.refreshHome()
-            self.refreshProfileData()
-            self.toastMessage.emit("行山記錄已發布至社區！")
-        else:
-            self.toastMessage.emit("行山記錄已保存至個人檔案")
+        if not uid:
+            self.toastMessage.emit("請先登錄再保存行山記錄")
+            self._hike_state = "idle"
+            self.hikeSessionChanged.emit()
+            return
+
+        tname = self._hike_trail.get("name", "香港山徑")
+        body_text = note.strip() or (
+            f"完成【{tname}】行山打卡！全程 {self.hikeDistanceKm} km，"
+            f"耗時 {self.hikeDurationText}，成功打卡 {self.hikeCheckedCount}/{self.hikeTotalCheckpoints} 個路標點。"
+        )
+        # Both buttons really persist. `published=False` keeps a private record
+        # out of the community feed while remaining visible in 我的動態.
+        created = post_service.create_post(
+            author_id=uid,
+            post_type="trip",
+            title=f"{tname} · 行山軌跡記錄",
+            body=body_text,
+            trail_id=self._hike_trail.get("id", "trail-01"),
+            photos=list(self._hike_photos),
+            tags=["行山記錄", self._hike_trail.get("region", "香港行山")],
+            trip_meta={
+                "published": publish_to_community,
+                "distance_km": self.hikeDistanceKm,
+                "duration_sec": self._hike_elapsed_sec,
+                "ascent_m": self._hike_trail.get("ascent_m", 0),
+                "checked_count": self.hikeCheckedCount,
+                "total_checkpoints": self.hikeTotalCheckpoints,
+                "path": self._hike_walked_path or self._hike_trail.get("path", []),
+            },
+        )
+        if not created.get("ok"):
+            self.toastMessage.emit(f"記錄保存失敗：{created.get('error', '未知錯誤')}")
+            self._hike_state = "idle"
+            self.hikeSessionChanged.emit()
+            return
+
+        self.refreshCommunity()
+        self.refreshHome()
+        self.refreshProfileData()
+        message = (
+            "行山記錄已發布至社區！"
+            if publish_to_community
+            else "行山記錄已保存到個人檔案（不會出現在社區）"
+        )
+        if created.get("note"):
+            message += f"（{created['note']}）"
+        if created.get("warning"):
+            message += f"｜{created['warning']}"
+        self.toastMessage.emit(message)
 
         self._hike_state = "idle"
         self.hikeSessionChanged.emit()
@@ -391,7 +467,7 @@ class ApiBridge(QObject):
         self._current_post = post_service.get_post_detail(post_id, current_user_id=uid)
         self.postDetailChanged.emit()
 
-    @Slot(str, str, str, str, "QVariantList", "QVariantList")
+    @Slot(str, str, str, str, "QVariantList", "QVariantList", result=bool)
     def publishPost(
         self,
         post_type: str,
@@ -400,11 +476,13 @@ class ApiBridge(QObject):
         trail_id: str,
         photos: List[str],
         tags: List[str],
-    ) -> None:
+    ) -> bool:
+        """Returns True only after the cloud write succeeded, so ComposePage
+        keeps the draft open on failure instead of silently closing it."""
         uid = (self._auth.current_user or {}).get("id")
         if not uid:
             self.toastMessage.emit("請先登錄後再發布內容")
-            return
+            return False
         created = post_service.create_post(
             author_id=uid,
             post_type=post_type,
@@ -414,33 +492,52 @@ class ApiBridge(QObject):
             photos=list(photos),
             tags=list(tags),
         )
+        if not created.get("ok"):
+            self.toastMessage.emit(f"發布失敗：{created.get('error', '未知錯誤')}")
+            return False
         self.refreshCommunity()
         self.refreshHome()
         self.refreshProfileData()
-        self.toastMessage.emit("發布成功！")
+        message = "發布成功！"
+        if created.get("note"):
+            message += f"（{created['note']}）"
+        if created.get("warning"):
+            message += f"｜{created['warning']}"
+        self.toastMessage.emit(message)
+        return True
 
     @Slot(str, str, str)
     def editMyPost(self, post_id: str, title: str, body: str) -> None:
         uid = (self._auth.current_user or {}).get("id")
         if not uid:
+            self.toastMessage.emit("請先登錄")
             return
-        post_service.update_post(post_id, uid, title, body)
+        res = post_service.update_post(post_id, uid, title, body)
+        if not res.get("ok"):
+            self.toastMessage.emit(res.get("error", "更新失敗"))
+            return
         self.refreshCommunity()
         self.refreshProfileData()
         if self._current_post.get("id") == post_id:
             self.loadPostDetail(post_id)
-        self.toastMessage.emit("動態已更新")
+        note = res.get("note", "")
+        self.toastMessage.emit("動態已更新" + (f"（{note}）" if note else ""))
 
     @Slot(str)
     def deleteMyPost(self, post_id: str) -> None:
         uid = (self._auth.current_user or {}).get("id")
         if not uid:
+            self.toastMessage.emit("請先登錄")
             return
-        if post_service.delete_post(post_id, uid):
-            self.refreshCommunity()
-            self.refreshHome()
-            self.refreshProfileData()
-            self.toastMessage.emit("動態已刪除")
+        res = post_service.delete_post(post_id, uid)
+        if not res.get("ok"):
+            self.toastMessage.emit(res.get("error", "刪除失敗"))
+            return
+        self.refreshCommunity()
+        self.refreshHome()
+        self.refreshProfileData()
+        note = res.get("note", "")
+        self.toastMessage.emit("動態已刪除" + (f"（{note}）" if note else ""))
 
     @Slot(str)
     def toggleLike(self, post_id: str) -> None:
@@ -448,11 +545,19 @@ class ApiBridge(QObject):
         if not uid:
             self.toastMessage.emit("請先登錄")
             return
-        social_service.toggle_like(post_id, uid)
+        res = social_service.toggle_like(post_id, uid)
+        if not res.get("ok"):
+            self.toastMessage.emit(res.get("error", "按讚失敗"))
+            return
         self.refreshCommunity()
         self.refreshHome()
+        self.refreshProfileData()
         if self._current_post.get("id") == post_id:
             self.loadPostDetail(post_id)
+        if res.get("offline"):
+            self.toastMessage.emit(
+                f"已更新按讚（{res.get('note', OFFLINE_HINT)}）"
+            )
 
     @Slot(str, str)
     def toggleFavorite(self, target_type: str, target_id: str) -> None:
@@ -461,37 +566,54 @@ class ApiBridge(QObject):
             self.toastMessage.emit("請先登錄")
             return
         res = social_service.toggle_favorite(target_type, target_id, uid)
+        if not res.get("ok"):
+            self.toastMessage.emit(res.get("error", "收藏失敗"))
+            return
         self.refreshCommunity()
         self.refreshHome()
         self.refreshProfileData()
+        self.filterTrails(*self._trail_filter)
         if target_type == "trail" and self._current_trail.get("id") == target_id:
             self.loadTrailDetail(target_id)
         elif target_type == "post" and self._current_post.get("id") == target_id:
             self.loadPostDetail(target_id)
         msg = "已加入收藏" if res.get("is_favorited") else "已取消收藏"
+        if res.get("note"):
+            msg += f"（{res['note']}）"
         self.toastMessage.emit(msg)
 
     @Slot(str, str, str)
     def addComment(self, post_id: str, body: str, parent_id: str = "") -> None:
         uid = (self._auth.current_user or {}).get("id")
-        if not uid or not body.strip():
+        if not uid:
+            self.toastMessage.emit("請先登錄")
             return
-        social_service.add_comment(post_id, uid, body, parent_id)
+        if not body.strip():
+            self.toastMessage.emit("請輸入評論內容")
+            return
+        res = social_service.add_comment(post_id, uid, body, parent_id)
+        if not res.get("ok"):
+            self.toastMessage.emit(res.get("error", "評論失敗"))
+            return
         self.loadPostDetail(post_id)
         self.refreshCommunity()
-        self.toastMessage.emit("評論已發送")
+        note = res.get("note", "")
+        self.toastMessage.emit("評論已發送" + (f"（{note}）" if note else ""))
 
     @Slot(str, str)
     def acceptAnswer(self, post_id: str, comment_id: str) -> None:
         uid = (self._auth.current_user or {}).get("id")
         if not uid:
+            self.toastMessage.emit("請先登錄")
             return
-        if social_service.accept_comment(post_id, comment_id, uid):
-            self.loadPostDetail(post_id)
-            self.refreshCommunity()
-            self.toastMessage.emit("已採納該山友回答！")
-        else:
-            self.toastMessage.emit("只有提問作者可採納回答，且每題僅限採納一次")
+        res = social_service.accept_comment(post_id, comment_id, uid)
+        if not res.get("ok"):
+            self.toastMessage.emit(res.get("error", "採納失敗"))
+            return
+        self.loadPostDetail(post_id)
+        self.refreshCommunity()
+        note = res.get("note", "")
+        self.toastMessage.emit("已採納該山友回答！" + (f"（{note}）" if note else ""))
 
     # -----------------------------------------------------------------------
     # Profile Page Properties / Slots

@@ -69,6 +69,37 @@
   - RLS（段落 7）：9 張表 `rls_enabled` 皆為 `t`。
   - 外鍵孤立（段落 8）：全部 0 行。
 
+## 步驟 5 ｜ SQL 補強 v5.1（既有專案請執行一次）
+
+> 若專案是 **v5 之前**建立的，請在 Supabase SQL Editor 貼上 `supabase/all_in_one.sql`
+> 全文執行一次；全新專案直接執行本檔即已包含所有補強。
+> 本機沒有 Management API / 資料庫直連憑據，因此這一步需由你在 SQL Editor 執行
+> （一次貼上、一次 Run，約數秒）。
+
+補強項目（**不改动既有 9 表欄位、不更動固定 UUID 種子資料**）：
+
+| # | 檔案 | 補強內容 |
+|---|---|---|
+| 1 | `schema.sql` | `uq_post_photos_post_path` 唯一索引：`seed.sql` / `all_in_one.sql` 重跑不再產生重複相片列 |
+| 2 | `schema.sql` | `uq_one_accepted_answer_per_question` 部分唯一索引：每題最多一個「已採納」回答，由 DB 強制 |
+| 3 | `schema.sql` | `trg_block_*_fk_update` 三個 Trigger：禁止 UPDATE 搬移 likes / comments / favorites 的關聯欄位，避免只處理 INSERT/DELETE 的計數 Trigger 無法追蹤而永久漂移 |
+| 4 | `schema.sql` | `trg_cleanup_post_favorites`：刪除貼文時以 SECURITY DEFINER 清除指向它的收藏，避免 `favorites.target_id`（TEXT、無外鍵）留下孤立列 |
+| 5 | `policies.sql` | `post_photos` 補 UPDATE / DELETE，且新增/修改/刪除一律校驗貼文歸屬 |
+| 6 | `policies.sql` | `comments` 採納限定「提問作者 + question 貼文」；搭配唯一索引強制「每題一次」 |
+| 7 | `policies.sql` | `favorites` 的 WITH CHECK 校驗 `target_id` 指向真實存在的路線 / 貼文 |
+| 8 | `tests/verify_db.sql` | 四段計數一致性改 `LEFT JOIN + COALESCE`，0 計數貼文不再被漏檢；補 `orphan_favorites` / `orphan_post_photos`；新增段落 9 檢查補強是否生效 |
+
+**可重跑性**：所有 `CREATE` 均為 `IF NOT EXISTS`、Trigger/Policy 先 `DROP IF EXISTS`、
+種子貼文用 `ON CONFLICT (id) DO NOTHING`、相片用
+`ON CONFLICT (post_id, storage_path) DO NOTHING`。重跑 `all_in_one.sql` 不會產生重複資料。
+
+**驗證**：執行後看 `verify_db.sql` 段落 9，應回傳 2 個索引名稱與 4 個 Trigger 名稱；
+段落 3–6 應全部 0 行，段落 8 的 `bad` 全部為 0。
+
+**與應用程式的關係**：App 的核心寫入（點讚 / 評論 / 收藏 / 採納 / 發帖 / 改資料 / 相片表）
+在補強前已實測可正常運作；補強是防止長期資料漂移與越權寫入的防線，不影響既有功能，
+也不會改變 `dist/HikeHub.exe` 的操作方式。
+
 ---
 
 ## 常見問題

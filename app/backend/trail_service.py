@@ -8,6 +8,16 @@ route detail with segments & checkpoints, and homepage featured/nearby routes.
 import copy
 from typing import Any, Dict, List, Optional
 from app.backend.supabase_client import get_db
+from app.backend.remote_store import get_remote_store
+
+
+def _ensure_cloud_snapshot() -> None:
+    """One-shot cloud refresh when the startup background sync has not landed.
+
+    Reads stay mirror-based (cheap), but online readers never serve a stale
+    hand-written seed: the first read pulls all 9 tables if needed.
+    """
+    get_remote_store().ensure_synced()
 
 
 def list_trails(
@@ -21,6 +31,7 @@ def list_trails(
     Return trails filtered by region, difficulty (1..5 or 0=all),
     duration_bucket ('全部' | '3小時內' | '3-4小時' | '4小時以上'), and keyword.
     """
+    _ensure_cloud_snapshot()
     db = get_db()
     trails = copy.deepcopy(db.store.get("trails", []))
     favorites = db.store.get("favorites", [])
@@ -58,15 +69,12 @@ def list_trails(
 
 def get_trail_detail(trail_id: str, current_user_id: Optional[str] = None) -> Dict[str, Any]:
     """Return full trail detail including ordered segments, checkpoints, and related posts."""
+    _ensure_cloud_snapshot()
     db = get_db()
     trails = db.store.get("trails", [])
     trail = next((copy.deepcopy(t) for t in trails if t["id"] == trail_id), None)
     if not trail:
-        if trails:
-            trail = copy.deepcopy(trails[0])
-            trail_id = trail["id"]
-        else:
-            return {}
+        return {}
 
     segments = [
         copy.deepcopy(s)

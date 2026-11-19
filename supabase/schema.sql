@@ -119,6 +119,13 @@ CREATE INDEX IF NOT EXISTS idx_posts_author ON public.posts(author_id, created_a
 CREATE INDEX IF NOT EXISTS idx_comments_post ON public.comments(post_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_favorites_user ON public.favorites(user_id, target_type);
 
+-- v5.1 補強：相片列不重複（讓 seed.sql / all_in_one.sql 可安全重跑）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_post_photos_post_path
+    ON public.post_photos(post_id, storage_path);
+-- v5.1 補強：每題最多一個「已採納」回答，由資料庫強制而非只靠應用層
+CREATE UNIQUE INDEX IF NOT EXISTS uq_one_accepted_answer_per_question
+    ON public.comments(post_id) WHERE is_accepted;
+
 -- ============================================================================
 -- Triggers to automatically maintain redundant counters on posts & trails
 -- ============================================================================
@@ -181,3 +188,59 @@ DROP TRIGGER IF EXISTS trg_sync_favorite_count ON public.favorites;
 CREATE TRIGGER trg_sync_favorite_count
 AFTER INSERT OR DELETE ON public.favorites
 FOR EACH ROW EXECUTE FUNCTION public.fn_sync_favorite_count();
+
+-- ============================================================================
+-- v5.1 補強：防止計數漂移、清理孤兒收藏（可重跑）
+-- ============================================================================
+
+-- (1) 計數 Trigger 只處理 INSERT / DELETE。若允許 UPDATE 搬移 post_id /
+--     target_id，舊貼文不會減、新貼文不會加，計數會永久漂移。
+--     因此禁止更改這三張表的計數關聯欄位：先 DELETE 再 INSERT 即可。
+CREATE OR REPLACE FUNCTION public.fn_block_counter_fk_update()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION '不允許更改 % 的計數關聯欄位，請先刪除再新增', TG_TABLE_NAME
+        USING ERRCODE = '23514';
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_block_likes_fk_update ON public.likes;
+CREATE TRIGGER trg_block_likes_fk_update
+BEFORE UPDATE OF post_id, user_id ON public.likes
+FOR EACH ROW
+WHEN (NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.user_id IS DISTINCT FROM OLD.user_id)
+EXECUTE FUNCTION public.fn_block_counter_fk_update();
+
+DROP TRIGGER IF EXISTS trg_block_comments_fk_update ON public.comments;
+CREATE TRIGGER trg_block_comments_fk_update
+BEFORE UPDATE OF post_id, author_id ON public.comments
+FOR EACH ROW
+WHEN (NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.author_id IS DISTINCT FROM OLD.author_id)
+EXECUTE FUNCTION public.fn_block_counter_fk_update();
+
+DROP TRIGGER IF EXISTS trg_block_favorites_fk_update ON public.favorites;
+CREATE TRIGGER trg_block_favorites_fk_update
+BEFORE UPDATE OF user_id, target_type, target_id ON public.favorites
+FOR EACH ROW
+WHEN (NEW.user_id IS DISTINCT FROM OLD.user_id
+      OR NEW.target_type IS DISTINCT FROM OLD.target_type
+      OR NEW.target_id IS DISTINCT FROM OLD.target_id)
+EXECUTE FUNCTION public.fn_block_counter_fk_update();
+
+-- (2) favorites.target_id 是 TEXT（無外鍵）。刪除貼文時以 SECURITY DEFINER
+--     清掉指向它的收藏，避免留下孤立列。這個 DELETE 會再觸發計數 Trigger，
+--     但 posts 列已刪除，不會造成任何計數變動。
+CREATE OR REPLACE FUNCTION public.fn_cleanup_post_favorites()
+RETURNS TRIGGER AS $$
+BEGIN
+    DELETE FROM public.favorites
+    WHERE target_type = 'post' AND target_id = OLD.id::text;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS trg_cleanup_post_favorites ON public.posts;
+CREATE TRIGGER trg_cleanup_post_favorites
+AFTER DELETE ON public.posts
+FOR EACH ROW EXECUTE FUNCTION public.fn_cleanup_post_favorites();

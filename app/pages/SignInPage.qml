@@ -63,8 +63,8 @@ Rectangle {
             Rectangle {
                 Layout.fillWidth: true
                 radius: Theme.radiusCard
-                color: api.envStatus.env_valid ? "#E8F3EE" : "#FDECE7"
-                border.color: api.envStatus.env_valid ? Theme.primaryGreen : Theme.accentOrange
+                color: (api.envStatus.env_valid && !api.envStatus.offline) ? "#E8F3EE" : "#FDECE7"
+                border.color: (api.envStatus.env_valid && !api.envStatus.offline) ? Theme.primaryGreen : Theme.accentOrange
                 border.width: 1
                 implicitHeight: envCol.implicitHeight + 16
 
@@ -76,12 +76,23 @@ Rectangle {
 
                     Text {
                         Layout.fillWidth: true
-                        text: api.envStatus.env_valid
-                              ? ("✓ Supabase 環境已就緒：" + api.envStatus.mode)
-                              : ("⚠️ 檢查 .env 配置：" + api.envStatus.env_error_message)
+                        text: !api.envStatus.env_valid
+                              ? ("⚠️ 檢查 .env 配置：" + api.envStatus.env_error_message)
+                              : (api.envStatus.offline
+                                 ? ("⚠️ 離線演示模式：" + api.envStatus.mode)
+                                 : ("✓ 已連線：" + api.envStatus.mode))
                         font.pixelSize: Theme.fontCaption
                         font.bold: true
-                        color: api.envStatus.env_valid ? Theme.primaryGreen : Theme.accentOrange
+                        color: (api.envStatus.env_valid && !api.envStatus.offline) ? Theme.primaryGreen : Theme.accentOrange
+                        wrapMode: Text.Wrap
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        visible: api.envStatus.offline === true
+                        text: "離線期間的點讚、評論、收藏、發文僅保存在本機；重新連線後以雲端資料為準。"
+                        font.pixelSize: 11
+                        color: Theme.accentOrange
                         wrapMode: Text.Wrap
                     }
 

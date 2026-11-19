@@ -27,32 +27,34 @@ FROM auth.users u
 ORDER BY u.email;
 
 -- 3. 計數一致性：posts.like_count vs likes
-SELECT p.id, p.like_count AS stored, real_counts.cnt AS actual
+--    LEFT JOIN + COALESCE：0 計數貼文（沒有任何 likes 列）也必須被檢查，
+--    否則 stored > 0 的漂移會被 INNER JOIN 靜默漏掉。
+SELECT p.id, p.like_count AS stored, COALESCE(real_counts.cnt, 0) AS actual
 FROM public.posts p
-JOIN (SELECT post_id, count(*) AS cnt FROM public.likes GROUP BY post_id) real_counts
+LEFT JOIN (SELECT post_id, count(*) AS cnt FROM public.likes GROUP BY post_id) real_counts
   ON real_counts.post_id = p.id
-WHERE p.like_count <> real_counts.cnt;
+WHERE p.like_count <> COALESCE(real_counts.cnt, 0);
 
 -- 4. 計數一致性：posts.comment_count vs comments
-SELECT p.id, p.comment_count AS stored, real_counts.cnt AS actual
+SELECT p.id, p.comment_count AS stored, COALESCE(real_counts.cnt, 0) AS actual
 FROM public.posts p
-JOIN (SELECT post_id, count(*) AS cnt FROM public.comments GROUP BY post_id) real_counts
+LEFT JOIN (SELECT post_id, count(*) AS cnt FROM public.comments GROUP BY post_id) real_counts
   ON real_counts.post_id = p.id
-WHERE p.comment_count <> real_counts.cnt;
+WHERE p.comment_count <> COALESCE(real_counts.cnt, 0);
 
 -- 5. 計數一致性：posts.favorite_count vs favorites(target_type='post')
-SELECT p.id, p.favorite_count AS stored, real_counts.cnt AS actual
+SELECT p.id, p.favorite_count AS stored, COALESCE(real_counts.cnt, 0) AS actual
 FROM public.posts p
-JOIN (SELECT target_id, count(*) AS cnt FROM public.favorites WHERE target_type='post' GROUP BY target_id) real_counts
+LEFT JOIN (SELECT target_id, count(*) AS cnt FROM public.favorites WHERE target_type='post' GROUP BY target_id) real_counts
   ON real_counts.target_id = p.id::text
-WHERE p.favorite_count <> real_counts.cnt;
+WHERE p.favorite_count <> COALESCE(real_counts.cnt, 0);
 
 -- 6. 計數一致性：trails.favorite_count vs favorites(target_type='trail')
-SELECT t.id, t.favorite_count AS stored, real_counts.cnt AS actual
+SELECT t.id, t.favorite_count AS stored, COALESCE(real_counts.cnt, 0) AS actual
 FROM public.trails t
-JOIN (SELECT target_id, count(*) AS cnt FROM public.favorites WHERE target_type='trail' GROUP BY target_id) real_counts
+LEFT JOIN (SELECT target_id, count(*) AS cnt FROM public.favorites WHERE target_type='trail' GROUP BY target_id) real_counts
   ON real_counts.target_id = t.id
-WHERE t.favorite_count <> real_counts.cnt;
+WHERE t.favorite_count <> COALESCE(real_counts.cnt, 0);
 
 -- 7. RLS 啟用狀態（9 張表 rowsecurity 皆應為 t）
 SELECT tablename, rowsecurity AS rls_enabled
@@ -60,9 +62,27 @@ FROM pg_tables
 WHERE schemaname = 'public'
 ORDER BY tablename;
 
--- 8. 外鍵孤立檢查（應全部回傳 0 行）
+-- 8. 外鍵 / 目標孤立檢查（應全部回傳 0 行）
 SELECT 'orphan_posts'        AS check_name, count(*) AS bad FROM public.posts p LEFT JOIN public.profiles pr ON pr.id = p.author_id WHERE pr.id IS NULL
 UNION ALL
 SELECT 'orphan_checkpoints', count(*) FROM public.checkpoints c LEFT JOIN public.trails t ON t.id = c.trail_id WHERE t.id IS NULL
 UNION ALL
-SELECT 'orphan_likes',       count(*) FROM public.likes l LEFT JOIN public.posts p ON p.id = l.post_id WHERE p.id IS NULL;
+SELECT 'orphan_likes',       count(*) FROM public.likes l LEFT JOIN public.posts p ON p.id = l.post_id WHERE p.id IS NULL
+UNION ALL
+SELECT 'orphan_favorites',   count(*) FROM public.favorites f
+  WHERE (f.target_type = 'trail' AND NOT EXISTS (SELECT 1 FROM public.trails t WHERE t.id = f.target_id))
+     OR (f.target_type = 'post'  AND NOT EXISTS (SELECT 1 FROM public.posts p WHERE p.id::text = f.target_id))
+UNION ALL
+SELECT 'orphan_post_photos', count(*) FROM public.post_photos pp LEFT JOIN public.posts p ON p.id = pp.post_id WHERE p.id IS NULL;
+
+-- 9. v5.1 補強是否生效：應看到 2 個唯一索引、4 個新 Trigger
+SELECT indexname FROM pg_indexes
+WHERE schemaname = 'public'
+  AND indexname IN ('uq_post_photos_post_path', 'uq_one_accepted_answer_per_question')
+ORDER BY indexname;
+
+SELECT tgname FROM pg_trigger
+WHERE NOT tgisinternal
+  AND tgname IN ('trg_block_likes_fk_update', 'trg_block_comments_fk_update',
+                 'trg_block_favorites_fk_update', 'trg_cleanup_post_favorites')
+ORDER BY tgname;

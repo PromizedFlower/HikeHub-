@@ -10,7 +10,9 @@ env/
 build/
 dist/
 
-# Secret service role keys or temporary local uploads
+# Local environment overrides (public anon values, kept out of git to avoid
+# accidental local edits; the exe bundles the values via build.spec).
+.env
 .env.service_role
 user_uploads/
 .hikehub_local_store.json

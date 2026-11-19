@@ -58,10 +58,29 @@ CREATE POLICY "Users can create posts"      ON public.posts FOR INSERT WITH CHEC
 CREATE POLICY "Authors can update own posts" ON public.posts FOR UPDATE USING (auth.uid() = author_id);
 CREATE POLICY "Authors can delete own posts" ON public.posts FOR DELETE USING (auth.uid() = author_id);
 
--- post_photos：登入用戶可為貼文上傳圖片
+-- post_photos：僅貼文作者可新增 / 修改 / 刪除相片列（v5.1 補強）
 DROP POLICY IF EXISTS "Authenticated users can insert post photos" ON public.post_photos;
-CREATE POLICY "Authenticated users can insert post photos"
-  ON public.post_photos FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+DROP POLICY IF EXISTS "Authors can insert post photos" ON public.post_photos;
+DROP POLICY IF EXISTS "Authors can update own post photos" ON public.post_photos;
+DROP POLICY IF EXISTS "Authors can delete own post photos" ON public.post_photos;
+CREATE POLICY "Authors can insert post photos" ON public.post_photos
+  FOR INSERT WITH CHECK (
+    auth.role() = 'authenticated'
+    AND EXISTS (
+      SELECT 1 FROM public.posts p
+      WHERE p.id = post_id AND p.author_id = auth.uid()
+    )
+  );
+CREATE POLICY "Authors can update own post photos" ON public.post_photos
+  FOR UPDATE USING (
+    EXISTS (SELECT 1 FROM public.posts p WHERE p.id = post_id AND p.author_id = auth.uid())
+  ) WITH CHECK (
+    EXISTS (SELECT 1 FROM public.posts p WHERE p.id = post_id AND p.author_id = auth.uid())
+  );
+CREATE POLICY "Authors can delete own post photos" ON public.post_photos
+  FOR DELETE USING (
+    EXISTS (SELECT 1 FROM public.posts p WHERE p.id = post_id AND p.author_id = auth.uid())
+  );
 
 -- comments：作者管理自己的留言；貼文作者可更新（用於「採納」回答）
 DROP POLICY IF EXISTS "Users can create comments"        ON public.comments;
@@ -73,6 +92,14 @@ CREATE POLICY "Authors can update comments" ON public.comments
   FOR UPDATE USING (
     auth.uid() = author_id
     OR auth.uid() = (SELECT author_id FROM public.posts p WHERE p.id = post_id)
+  ) WITH CHECK (
+    -- 標為「已採納」僅限提問作者 + question 貼文；「每題一次」另由
+    -- schema.sql 的 uq_one_accepted_answer_per_question 部分唯一索引強制。
+    is_accepted = false
+    OR (
+      auth.uid() = (SELECT author_id FROM public.posts p WHERE p.id = post_id)
+      AND (SELECT p.type FROM public.posts p WHERE p.id = post_id) = 'question'
+    )
   );
 CREATE POLICY "Authors can delete comments" ON public.comments
   FOR DELETE USING (
@@ -85,10 +112,21 @@ DROP POLICY IF EXISTS "Users can manage own likes" ON public.likes;
 CREATE POLICY "Users can manage own likes"
   ON public.likes FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
--- favorites：只能操作自己的收藏
+-- favorites：只能操作自己的收藏，且 target_id 必須指向真實存在的路線 / 貼文
 DROP POLICY IF EXISTS "Users can manage own favorites" ON public.favorites;
 CREATE POLICY "Users can manage own favorites"
-  ON public.favorites FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+  ON public.favorites FOR ALL USING (auth.uid() = user_id)
+  WITH CHECK (
+    auth.uid() = user_id
+    AND (
+      (target_type = 'trail' AND EXISTS (
+        SELECT 1 FROM public.trails t WHERE t.id = target_id
+      ))
+      OR (target_type = 'post' AND EXISTS (
+        SELECT 1 FROM public.posts p WHERE p.id::text = target_id
+      ))
+    )
+  );
 
 -- 4. Storage bucket 'trail-photos'
 INSERT INTO storage.buckets (id, name, public)

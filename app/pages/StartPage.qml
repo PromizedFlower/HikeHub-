@@ -150,7 +150,7 @@ Rectangle {
                     }
 
                     Text {
-                        text: "全長 " + (api.hikeTrail.distance_km || 8.5) + " km · 爬升 " + (api.hikeTrail.ascent_m || 285) + " m · 共 " + api.hikeTotalCheckpoints + " 個打卡點"
+                        text: "全長 " + (api.hikeTrail.distance_km || 0) + " km · 爬升 " + (api.hikeTrail.ascent_m || 0) + " m · 共 " + api.hikeTotalCheckpoints + " 個打卡點"
                         font.pixelSize: Theme.fontCaption
                         color: Theme.textSecondary
                     }
@@ -208,6 +208,19 @@ Rectangle {
                         Layout.fillWidth: true
                     }
 
+                    TextField {
+                        id: hikePhotoField
+                        Layout.fillWidth: true
+                        placeholderText: "貼上相片網址或本機檔案路徑（選填）"
+                        font.pixelSize: 12
+                        padding: 8
+                        background: Rectangle {
+                            radius: 8
+                            color: Theme.bgCream
+                            border.color: "#DCDCDC"
+                        }
+                    }
+
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 8
@@ -221,9 +234,12 @@ Rectangle {
 
                         PrimaryButton {
                             Layout.fillWidth: true
-                            text: "📷 拍照記錄"
+                            text: "📷 加入相片"
                             bgColor: "#3D7A5D"
-                            onClicked: api.addHikePhoto("")
+                            onClicked: {
+                                api.addHikePhoto(hikePhotoField.text)
+                                hikePhotoField.text = ""
+                            }
                         }
 
                         PrimaryButton {
@@ -295,7 +311,7 @@ Rectangle {
                             StatPill {
                                 Layout.fillWidth: true
                                 label: "沿途拍照 / 爬升"
-                                value: api.hikePhotoCount + "張 / " + (api.hikeTrail.ascent_m || 285) + "m"
+                                value: api.hikePhotoCount + "張 / " + (api.hikeTrail.ascent_m || 0) + "m"
                             }
                         }
 

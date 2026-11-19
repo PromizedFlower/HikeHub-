@@ -1,6 +1,8 @@
 -- HikeHub ONE-CLICK SQL : paste ALL into Supabase SQL Editor and click Run
 -- PREREQUISITE: run supabase/create_auth_users.ps1 FIRST (Auth Admin API).
--- Order: schema -> policies -> seed -> verify. Safe to re-run.
+-- Order: schema -> policies -> seed -> verify. Safe to re-run (v5.1).
+-- v5.1: counter-drift guards, Q&A acceptance constraints, RLS hardening,
+--       idempotent post_photos seeding, and 0-count-aware verification.
 
 -- ===== 1/4 schema.sql =====
 -- ============================================================================
@@ -124,6 +126,13 @@ CREATE INDEX IF NOT EXISTS idx_posts_author ON public.posts(author_id, created_a
 CREATE INDEX IF NOT EXISTS idx_comments_post ON public.comments(post_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_favorites_user ON public.favorites(user_id, target_type);
 
+-- v5.1 補強：相片列不重複（讓 seed.sql / all_in_one.sql 可安全重跑）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_post_photos_post_path
+    ON public.post_photos(post_id, storage_path);
+-- v5.1 補強：每題最多一個「已採納」回答，由資料庫強制而非只靠應用層
+CREATE UNIQUE INDEX IF NOT EXISTS uq_one_accepted_answer_per_question
+    ON public.comments(post_id) WHERE is_accepted;
+
 -- ============================================================================
 -- Triggers to automatically maintain redundant counters on posts & trails
 -- ============================================================================
@@ -187,6 +196,61 @@ CREATE TRIGGER trg_sync_favorite_count
 AFTER INSERT OR DELETE ON public.favorites
 FOR EACH ROW EXECUTE FUNCTION public.fn_sync_favorite_count();
 
+-- ============================================================================
+-- v5.1 補強：防止計數漂移、清理孤兒收藏（可重跑）
+-- ============================================================================
+
+-- (1) 計數 Trigger 只處理 INSERT / DELETE。若允許 UPDATE 搬移 post_id /
+--     target_id，舊貼文不會減、新貼文不會加，計數會永久漂移。
+--     因此禁止更改這三張表的計數關聯欄位：先 DELETE 再 INSERT 即可。
+CREATE OR REPLACE FUNCTION public.fn_block_counter_fk_update()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION '不允許更改 % 的計數關聯欄位，請先刪除再新增', TG_TABLE_NAME
+        USING ERRCODE = '23514';
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_block_likes_fk_update ON public.likes;
+CREATE TRIGGER trg_block_likes_fk_update
+BEFORE UPDATE OF post_id, user_id ON public.likes
+FOR EACH ROW
+WHEN (NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.user_id IS DISTINCT FROM OLD.user_id)
+EXECUTE FUNCTION public.fn_block_counter_fk_update();
+
+DROP TRIGGER IF EXISTS trg_block_comments_fk_update ON public.comments;
+CREATE TRIGGER trg_block_comments_fk_update
+BEFORE UPDATE OF post_id, author_id ON public.comments
+FOR EACH ROW
+WHEN (NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.author_id IS DISTINCT FROM OLD.author_id)
+EXECUTE FUNCTION public.fn_block_counter_fk_update();
+
+DROP TRIGGER IF EXISTS trg_block_favorites_fk_update ON public.favorites;
+CREATE TRIGGER trg_block_favorites_fk_update
+BEFORE UPDATE OF user_id, target_type, target_id ON public.favorites
+FOR EACH ROW
+WHEN (NEW.user_id IS DISTINCT FROM OLD.user_id
+      OR NEW.target_type IS DISTINCT FROM OLD.target_type
+      OR NEW.target_id IS DISTINCT FROM OLD.target_id)
+EXECUTE FUNCTION public.fn_block_counter_fk_update();
+
+-- (2) favorites.target_id 是 TEXT（無外鍵）。刪除貼文時以 SECURITY DEFINER
+--     清掉指向它的收藏，避免留下孤立列。這個 DELETE 會再觸發計數 Trigger，
+--     但 posts 列已刪除，不會造成任何計數變動。
+CREATE OR REPLACE FUNCTION public.fn_cleanup_post_favorites()
+RETURNS TRIGGER AS $$
+BEGIN
+    DELETE FROM public.favorites
+    WHERE target_type = 'post' AND target_id = OLD.id::text;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS trg_cleanup_post_favorites ON public.posts;
+CREATE TRIGGER trg_cleanup_post_favorites
+AFTER DELETE ON public.posts
+FOR EACH ROW EXECUTE FUNCTION public.fn_cleanup_post_favorites();
 
 -- ===== 2/4 policies.sql =====
 -- ============================================================================
@@ -249,10 +313,29 @@ CREATE POLICY "Users can create posts"      ON public.posts FOR INSERT WITH CHEC
 CREATE POLICY "Authors can update own posts" ON public.posts FOR UPDATE USING (auth.uid() = author_id);
 CREATE POLICY "Authors can delete own posts" ON public.posts FOR DELETE USING (auth.uid() = author_id);
 
--- post_photos：登入用戶可為貼文上傳圖片
+-- post_photos：僅貼文作者可新增 / 修改 / 刪除相片列（v5.1 補強）
 DROP POLICY IF EXISTS "Authenticated users can insert post photos" ON public.post_photos;
-CREATE POLICY "Authenticated users can insert post photos"
-  ON public.post_photos FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+DROP POLICY IF EXISTS "Authors can insert post photos" ON public.post_photos;
+DROP POLICY IF EXISTS "Authors can update own post photos" ON public.post_photos;
+DROP POLICY IF EXISTS "Authors can delete own post photos" ON public.post_photos;
+CREATE POLICY "Authors can insert post photos" ON public.post_photos
+  FOR INSERT WITH CHECK (
+    auth.role() = 'authenticated'
+    AND EXISTS (
+      SELECT 1 FROM public.posts p
+      WHERE p.id = post_id AND p.author_id = auth.uid()
+    )
+  );
+CREATE POLICY "Authors can update own post photos" ON public.post_photos
+  FOR UPDATE USING (
+    EXISTS (SELECT 1 FROM public.posts p WHERE p.id = post_id AND p.author_id = auth.uid())
+  ) WITH CHECK (
+    EXISTS (SELECT 1 FROM public.posts p WHERE p.id = post_id AND p.author_id = auth.uid())
+  );
+CREATE POLICY "Authors can delete own post photos" ON public.post_photos
+  FOR DELETE USING (
+    EXISTS (SELECT 1 FROM public.posts p WHERE p.id = post_id AND p.author_id = auth.uid())
+  );
 
 -- comments：作者管理自己的留言；貼文作者可更新（用於「採納」回答）
 DROP POLICY IF EXISTS "Users can create comments"        ON public.comments;
@@ -264,6 +347,14 @@ CREATE POLICY "Authors can update comments" ON public.comments
   FOR UPDATE USING (
     auth.uid() = author_id
     OR auth.uid() = (SELECT author_id FROM public.posts p WHERE p.id = post_id)
+  ) WITH CHECK (
+    -- 標為「已採納」僅限提問作者 + question 貼文；「每題一次」另由
+    -- schema.sql 的 uq_one_accepted_answer_per_question 部分唯一索引強制。
+    is_accepted = false
+    OR (
+      auth.uid() = (SELECT author_id FROM public.posts p WHERE p.id = post_id)
+      AND (SELECT p.type FROM public.posts p WHERE p.id = post_id) = 'question'
+    )
   );
 CREATE POLICY "Authors can delete comments" ON public.comments
   FOR DELETE USING (
@@ -276,10 +367,21 @@ DROP POLICY IF EXISTS "Users can manage own likes" ON public.likes;
 CREATE POLICY "Users can manage own likes"
   ON public.likes FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
--- favorites：只能操作自己的收藏
+-- favorites：只能操作自己的收藏，且 target_id 必須指向真實存在的路線 / 貼文
 DROP POLICY IF EXISTS "Users can manage own favorites" ON public.favorites;
 CREATE POLICY "Users can manage own favorites"
-  ON public.favorites FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+  ON public.favorites FOR ALL USING (auth.uid() = user_id)
+  WITH CHECK (
+    auth.uid() = user_id
+    AND (
+      (target_type = 'trail' AND EXISTS (
+        SELECT 1 FROM public.trails t WHERE t.id = target_id
+      ))
+      OR (target_type = 'post' AND EXISTS (
+        SELECT 1 FROM public.posts p WHERE p.id::text = target_id
+      ))
+    )
+  );
 
 -- 4. Storage bucket 'trail-photos'
 INSERT INTO storage.buckets (id, name, public)
@@ -292,7 +394,6 @@ CREATE POLICY "Public read trail-photos" ON storage.objects
   FOR SELECT USING (bucket_id = 'trail-photos');
 CREATE POLICY "Authenticated upload trail-photos" ON storage.objects
   FOR INSERT WITH CHECK (bucket_id = 'trail-photos' AND auth.role() = 'authenticated');
-
 
 -- ===== 3/4 seed.sql =====
 -- ============================================================================
@@ -388,16 +489,19 @@ INSERT INTO public.checkpoints (id, trail_id, segment_id, seq, name, lat, lng, n
 
 -- 5. Posts (Moments, Questions, Trips) & Photos
 INSERT INTO public.posts (id, author_id, type, title, body, trail_id, meta, created_at) VALUES ('22222222-2222-4222-8222-222222222201', '11111111-1111-4111-8111-111111111102', 'moment', '龍脊秋風超爽！石澳海景無敵', '今日天朗氣清同山友行龍脊，打爛埕頂山吹海風超舒服，全程兩個半鐘落到大浪灣食餐蛋麵！強烈推薦週末早啲出發避開人潮。', 'trail-01', '{"tags": ["風景", "補給", "週末好去處"]}'::jsonb, '2026-11-02T17:20:00Z') ON CONFLICT (id) DO NOTHING;
-INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222201', 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=800&auto=format&fit=crop&q=80', 1);
-INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222201', 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=800&auto=format&fit=crop&q=80', 2);
+INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222201', 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=800&auto=format&fit=crop&q=80', 1) ON CONFLICT (post_id, storage_path) DO NOTHING;
+INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222201', 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=800&auto=format&fit=crop&q=80', 2) ON CONFLICT (post_id, storage_path) DO NOTHING;
 INSERT INTO public.posts (id, author_id, type, title, body, trail_id, meta, created_at) VALUES ('22222222-2222-4222-8222-222222222202', '11111111-1111-4111-8111-111111111101', 'trip', '麥理浩徑二段全走打卡記錄', '北潭凹入、東壩出，鹹田灣同浪茄灣水質依然係玻璃水級數！西灣村士多食咗碗冰凍綠豆沙回血，全程 13.5km 順利完成 4 個打卡點。', 'trail-02', '{"distance_km": 13.5, "duration_sec": 16800, "ascent_m": 580, "checked_count": 4, "total_checkpoints": 4, "tags": ["行山記錄", "西貢", "海景"], "path": [[22.4192, 114.3318], [22.4165, 114.351], [22.408, 114.3745], [22.3982, 114.3712], [22.3765, 114.3752]]}'::jsonb, '2026-11-02T20:10:00Z') ON CONFLICT (id) DO NOTHING;
-INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222202', 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=800&auto=format&fit=crop&q=80', 1);
+INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222202', 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=800&auto=format&fit=crop&q=80', 1) ON CONFLICT (post_id, storage_path) DO NOTHING;
+INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222202', 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=800&auto=format&fit=crop&q=80', 2) ON CONFLICT (post_id, storage_path) DO NOTHING;
 INSERT INTO public.posts (id, author_id, type, title, body, trail_id, meta, created_at) VALUES ('22222222-2222-4222-8222-222222222203', '11111111-1111-4111-8111-111111111104', 'moment', '大東山芒草季開鑼！夕陽金光太震撼', '三點半由伯公坳上山，五點剛好趕到爛頭營石屋影日落芒草。提醒大家太陽落山後風好大，記得帶件防風外套同頭燈落梅窩！', 'trail-04', '{"tags": ["芒草", "日落", "大嶼山"]}'::jsonb, '2026-11-03T09:30:00Z') ON CONFLICT (id) DO NOTHING;
-INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222203', 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?w=800&auto=format&fit=crop&q=80', 1);
+INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222203', 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?w=800&auto=format&fit=crop&q=80', 1) ON CONFLICT (post_id, storage_path) DO NOTHING;
+INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222203', 'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?w=800&auto=format&fit=crop&q=80', 2) ON CONFLICT (post_id, storage_path) DO NOTHING;
 INSERT INTO public.posts (id, author_id, type, title, body, trail_id, meta, created_at) VALUES ('22222222-2222-4222-8222-222222222204', '11111111-1111-4111-8111-111111111106', 'question', '請問週末去麥徑二段，西灣亭村巴尾班車係幾點？', '各位山友師兄師姐好！我同朋友星期六打算由北潭凹行去西灣村，怕體力唔夠未必行到去東壩，想問下西灣亭返西貢市中心嘅29R村巴尾班車係幾點？另外鹹田灣有冇街渡直接返西貢？唔該晒！', 'trail-02', '{"tags": ["交通", "撤退點"]}'::jsonb, '2026-11-01T15:00:00Z') ON CONFLICT (id) DO NOTHING;
 INSERT INTO public.posts (id, author_id, type, title, body, trail_id, meta, created_at) VALUES ('22222222-2222-4222-8222-222222222205', '11111111-1111-4111-8111-111111111105', 'question', '11月凌晨上鳳凰山睇日出，需要著羽絨定普通抓絨就夠？', '準備今個禮拜日凌晨3點半由伯公坳上鳳凰山，市區預報19度左右，想請教近期上過頂嘅山友，山頂避風亭等日出嗰陣會唔會好凍？裝備方面有咩建議？', 'trail-10', '{"tags": ["裝備", "天氣"]}'::jsonb, '2026-11-03T11:45:00Z') ON CONFLICT (id) DO NOTHING;
 INSERT INTO public.posts (id, author_id, type, title, body, trail_id, meta, created_at) VALUES ('22222222-2222-4222-8222-222222222206', '11111111-1111-4111-8111-111111111103', 'moment', '獅子山頂望九龍全景 + 沙田坳豆腐花', '天馬苑上獅子山段石級雖然急，但上到山頂望住九龍同維港真係超值。落山去沙田坳食返碗熱辣辣薑汁豆腐花，完美半日遊！', 'trail-03', '{"tags": ["九龍全景", "補給", "豆腐花"]}'::jsonb, '2026-11-03T13:15:00Z') ON CONFLICT (id) DO NOTHING;
-INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222206', 'https://images.unsplash.com/photo-1519681393784-d120267933ba?w=800&auto=format&fit=crop&q=80', 1);
+INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222206', 'https://images.unsplash.com/photo-1519681393784-d120267933ba?w=800&auto=format&fit=crop&q=80', 1) ON CONFLICT (post_id, storage_path) DO NOTHING;
+INSERT INTO public.post_photos (post_id, storage_path, seq) VALUES ('22222222-2222-4222-8222-222222222206', 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800&auto=format&fit=crop&q=80', 2) ON CONFLICT (post_id, storage_path) DO NOTHING;
 
 -- 6. Comments
 INSERT INTO public.comments (id, post_id, author_id, parent_id, body, is_accepted, created_at) VALUES ('33333333-3333-4333-8333-333333333301', '22222222-2222-4222-8222-222222222201', '11111111-1111-4111-8111-111111111101', NULL, '相片影得好靚！大浪灣間士多啲蔥油豬扒麵都好正。', FALSE, '2026-11-02T18:00:00Z') ON CONFLICT (id) DO NOTHING;
@@ -429,7 +533,6 @@ INSERT INTO public.favorites (user_id, target_type, target_id) VALUES ('11111111
 INSERT INTO public.favorites (user_id, target_type, target_id) VALUES ('11111111-1111-4111-8111-111111111102', 'trail', 'trail-06') ON CONFLICT DO NOTHING;
 INSERT INTO public.favorites (user_id, target_type, target_id) VALUES ('11111111-1111-4111-8111-111111111102', 'post', '22222222-2222-4222-8222-222222222202') ON CONFLICT DO NOTHING;
 
-
 -- ===== 4/4 verify_db.sql =====
 -- ============================================================================
 -- 行山腳 HikeHub · 資料庫驗證腳本
@@ -460,32 +563,34 @@ FROM auth.users u
 ORDER BY u.email;
 
 -- 3. 計數一致性：posts.like_count vs likes
-SELECT p.id, p.like_count AS stored, real_counts.cnt AS actual
+--    LEFT JOIN + COALESCE：0 計數貼文（沒有任何 likes 列）也必須被檢查，
+--    否則 stored > 0 的漂移會被 INNER JOIN 靜默漏掉。
+SELECT p.id, p.like_count AS stored, COALESCE(real_counts.cnt, 0) AS actual
 FROM public.posts p
-JOIN (SELECT post_id, count(*) AS cnt FROM public.likes GROUP BY post_id) real_counts
+LEFT JOIN (SELECT post_id, count(*) AS cnt FROM public.likes GROUP BY post_id) real_counts
   ON real_counts.post_id = p.id
-WHERE p.like_count <> real_counts.cnt;
+WHERE p.like_count <> COALESCE(real_counts.cnt, 0);
 
 -- 4. 計數一致性：posts.comment_count vs comments
-SELECT p.id, p.comment_count AS stored, real_counts.cnt AS actual
+SELECT p.id, p.comment_count AS stored, COALESCE(real_counts.cnt, 0) AS actual
 FROM public.posts p
-JOIN (SELECT post_id, count(*) AS cnt FROM public.comments GROUP BY post_id) real_counts
+LEFT JOIN (SELECT post_id, count(*) AS cnt FROM public.comments GROUP BY post_id) real_counts
   ON real_counts.post_id = p.id
-WHERE p.comment_count <> real_counts.cnt;
+WHERE p.comment_count <> COALESCE(real_counts.cnt, 0);
 
 -- 5. 計數一致性：posts.favorite_count vs favorites(target_type='post')
-SELECT p.id, p.favorite_count AS stored, real_counts.cnt AS actual
+SELECT p.id, p.favorite_count AS stored, COALESCE(real_counts.cnt, 0) AS actual
 FROM public.posts p
-JOIN (SELECT target_id, count(*) AS cnt FROM public.favorites WHERE target_type='post' GROUP BY target_id) real_counts
+LEFT JOIN (SELECT target_id, count(*) AS cnt FROM public.favorites WHERE target_type='post' GROUP BY target_id) real_counts
   ON real_counts.target_id = p.id::text
-WHERE p.favorite_count <> real_counts.cnt;
+WHERE p.favorite_count <> COALESCE(real_counts.cnt, 0);
 
 -- 6. 計數一致性：trails.favorite_count vs favorites(target_type='trail')
-SELECT t.id, t.favorite_count AS stored, real_counts.cnt AS actual
+SELECT t.id, t.favorite_count AS stored, COALESCE(real_counts.cnt, 0) AS actual
 FROM public.trails t
-JOIN (SELECT target_id, count(*) AS cnt FROM public.favorites WHERE target_type='trail' GROUP BY target_id) real_counts
+LEFT JOIN (SELECT target_id, count(*) AS cnt FROM public.favorites WHERE target_type='trail' GROUP BY target_id) real_counts
   ON real_counts.target_id = t.id
-WHERE t.favorite_count <> real_counts.cnt;
+WHERE t.favorite_count <> COALESCE(real_counts.cnt, 0);
 
 -- 7. RLS 啟用狀態（9 張表 rowsecurity 皆應為 t）
 SELECT tablename, rowsecurity AS rls_enabled
@@ -493,10 +598,27 @@ FROM pg_tables
 WHERE schemaname = 'public'
 ORDER BY tablename;
 
--- 8. 外鍵孤立檢查（應全部回傳 0 行）
+-- 8. 外鍵 / 目標孤立檢查（應全部回傳 0 行）
 SELECT 'orphan_posts'        AS check_name, count(*) AS bad FROM public.posts p LEFT JOIN public.profiles pr ON pr.id = p.author_id WHERE pr.id IS NULL
 UNION ALL
 SELECT 'orphan_checkpoints', count(*) FROM public.checkpoints c LEFT JOIN public.trails t ON t.id = c.trail_id WHERE t.id IS NULL
 UNION ALL
-SELECT 'orphan_likes',       count(*) FROM public.likes l LEFT JOIN public.posts p ON p.id = l.post_id WHERE p.id IS NULL;
+SELECT 'orphan_likes',       count(*) FROM public.likes l LEFT JOIN public.posts p ON p.id = l.post_id WHERE p.id IS NULL
+UNION ALL
+SELECT 'orphan_favorites',   count(*) FROM public.favorites f
+  WHERE (f.target_type = 'trail' AND NOT EXISTS (SELECT 1 FROM public.trails t WHERE t.id = f.target_id))
+     OR (f.target_type = 'post'  AND NOT EXISTS (SELECT 1 FROM public.posts p WHERE p.id::text = f.target_id))
+UNION ALL
+SELECT 'orphan_post_photos', count(*) FROM public.post_photos pp LEFT JOIN public.posts p ON p.id = pp.post_id WHERE p.id IS NULL;
 
+-- 9. v5.1 補強是否生效：應看到 2 個唯一索引、4 個新 Trigger
+SELECT indexname FROM pg_indexes
+WHERE schemaname = 'public'
+  AND indexname IN ('uq_post_photos_post_path', 'uq_one_accepted_answer_per_question')
+ORDER BY indexname;
+
+SELECT tgname FROM pg_trigger
+WHERE NOT tgisinternal
+  AND tgname IN ('trg_block_likes_fk_update', 'trg_block_comments_fk_update',
+                 'trg_block_favorites_fk_update', 'trg_cleanup_post_favorites')
+ORDER BY tgname;

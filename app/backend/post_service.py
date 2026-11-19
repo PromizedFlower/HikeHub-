@@ -3,7 +3,11 @@
 Author: Member A (Data Architect)
 
 Handles community moments, Q&A questions, hiking trip records, photo upload
-to trail-photos bucket (with local media fallback), post editing, and deletion.
+to the `trail-photos` bucket, post editing and deletion.
+
+All writes go through `RemoteStore`: posts land in `public.posts`, and every
+photo is recorded in `public.post_photos` so the same list can be rebuilt by
+`sync_mirror()`. `_enrich_post` remains a pure, mirror-only assembler.
 """
 import copy
 import datetime
@@ -11,7 +15,15 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
+
 from app.backend.supabase_client import get_db, get_runtime_root
+from app.backend.remote_store import get_remote_store, OFFLINE_HINT
+
+
+def _note(offline: bool) -> str:
+    return OFFLINE_HINT if offline else ""
 
 
 def _enrich_post(post: Dict[str, Any], current_user_id: Optional[str] = None) -> Dict[str, Any]:
@@ -68,6 +80,9 @@ def list_posts(
     filtered: List[Dict[str, Any]] = []
 
     for p in raw_posts:
+        # 「僅保存記錄」的行程只對作者本人（我的動態）可見，不進社區流。
+        if author_id is None and p.get("meta", {}).get("published") is False:
+            continue
         ptype = p.get("type", "moment")
         if post_type == "moment" and ptype not in ("moment", "trip"):
             continue
@@ -117,19 +132,28 @@ def get_post_detail(post_id: str, current_user_id: Optional[str] = None) -> Dict
     return enriched
 
 
+def _resolve_local_path(local_path: str) -> Path:
+    """Correctly decode a `file:///` URI on Windows (D:/... , UNC, localhost)."""
+    if not local_path.startswith("file://"):
+        return Path(local_path)
+    parsed = urlparse(local_path)
+    decoded = url2pathname(unquote(parsed.path))
+    if parsed.netloc and parsed.netloc.lower() not in ("", "localhost"):
+        decoded = f"//{parsed.netloc}{decoded}"
+    return Path(decoded)
+
+
 def upload_photo(local_path: str) -> str:
     """
-    Upload photo to Supabase Storage bucket 'trail-photos' if online,
-    or copy to local runtime media folder and return file:// or https:// URL for QML Image.
+    Upload to Supabase Storage bucket 'trail-photos' when online; otherwise
+    copy into a writable local media folder and return a file:// URL.
     """
     if not local_path:
         return ""
     if local_path.startswith("http://") or local_path.startswith("https://"):
         return local_path
 
-    clean_path = local_path.replace("file:///", "/" if not local_path.startswith("file:///C:") else "")
-    clean_path = clean_path.replace("file://", "")
-    src = Path(clean_path)
+    src = _resolve_local_path(local_path)
     db = get_db()
 
     if src.exists():
@@ -161,15 +185,16 @@ def create_post(
     tags: Optional[List[str]] = None,
     trip_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Create a new moment, question, or trip post and persist to store."""
+    """Create a moment/question/trip post in the cloud, plus its photo rows."""
     db = get_db()
+    store = get_remote_store()
     uploaded_urls = [upload_photo(p) for p in (photos or []) if p]
     meta: Dict[str, Any] = {"tags": tags or ["香港行山"]}
     if trip_meta:
         meta.update(trip_meta)
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    new_post = {
+    payload = {
         "id": str(uuid.uuid4()),
         "author_id": author_id,
         "type": post_type if post_type in ("moment", "question", "trip") else "moment",
@@ -177,44 +202,93 @@ def create_post(
         "body": body.strip(),
         "trail_id": trail_id or "trail-01",
         "meta": meta,
-        "like_count": 0,
-        "comment_count": 0,
-        "favorite_count": 0,
         "created_at": now_iso,
-        "photos": uploaded_urls,
     }
-    db.store.setdefault("posts", []).insert(0, new_post)
+    result = store.insert("posts", payload)
+    if not result.ok:
+        return {"ok": False, "error": result.error, "offline": result.offline}
+
+    row = dict(result.data or payload)
+    for counter in ("like_count", "comment_count", "favorite_count"):
+        row.setdefault(counter, 0)
+
+    warning = ""
+    accepted_urls: List[str] = []
+    for url in uploaded_urls:
+        photo_payload = {
+            "post_id": row["id"],
+            "storage_path": url,
+            "seq": len(accepted_urls) + 1,
+        }
+        photo_result = store.insert("post_photos", photo_payload)
+        if not photo_result.ok:
+            if not warning:
+                warning = f"貼文已保存，但部分相片未能寫入雲端：{photo_result.error}"
+            continue
+        accepted_urls.append(url)
+        mirror_photo = dict(photo_payload)
+        mirror_photo["id"] = (photo_result.data or {}).get("id") or str(uuid.uuid4())
+        store.mirror_add("post_photos", mirror_photo)
+    row["photos"] = accepted_urls
+
+    store.mirror_add("posts", row)
     db.save_store()
-    return _enrich_post(new_post, current_user_id=author_id)
+    return {
+        "ok": True,
+        "post": _enrich_post(row, current_user_id=author_id),
+        "offline": result.offline,
+        "note": _note(result.offline),
+        "warning": warning,
+    }
 
 
 def update_post(post_id: str, author_id: str, title: str, body: str) -> Dict[str, Any]:
-    """Edit own post title & body."""
+    """Edit own post title & body in the cloud, then patch the mirror."""
     db = get_db()
-    for p in db.store.get("posts", []):
-        if p["id"] == post_id and p.get("author_id") == author_id:
-            p["title"] = title.strip() or p["title"]
-            p["body"] = body.strip() or p["body"]
-            db.save_store()
-            return _enrich_post(p, current_user_id=author_id)
-    return {}
+    store = get_remote_store()
+    post = store.mirror_row("posts", id=post_id)
+    if not post or post.get("author_id") != author_id:
+        return {"ok": False, "error": "只能編輯自己的貼文"}
+
+    payload = {
+        "title": title.strip() or post.get("title", ""),
+        "body": body.strip() or post.get("body", ""),
+    }
+    result = store.update("posts", payload, id=post_id, author_id=author_id)
+    if not result.ok:
+        return {"ok": False, "error": result.error, "offline": result.offline}
+
+    store.mirror_patch("posts", payload, id=post_id)
+    db.save_store()
+    updated = store.mirror_row("posts", id=post_id) or post
+    return {
+        "ok": True,
+        "post": _enrich_post(updated, current_user_id=author_id),
+        "offline": result.offline,
+        "note": _note(result.offline),
+    }
 
 
-def delete_post(post_id: str, author_id: str) -> bool:
-    """Delete own post and cascade likes/comments/favorites."""
+def delete_post(post_id: str, author_id: str) -> Dict[str, Any]:
+    """Delete own post; the cloud cascades likes/comments/photos."""
     db = get_db()
-    posts = db.store.get("posts", [])
-    before = len(posts)
-    db.store["posts"] = [
-        p for p in posts if not (p["id"] == post_id and p.get("author_id") == author_id)
-    ]
-    if len(db.store["posts"]) < before:
-        db.store["comments"] = [c for c in db.store.get("comments", []) if c.get("post_id") != post_id]
-        db.store["likes"] = [lk for lk in db.store.get("likes", []) if lk.get("post_id") != post_id]
-        db.store["favorites"] = [
-            fv for fv in db.store.get("favorites", [])
-            if not (fv.get("target_type") == "post" and fv.get("target_id") == post_id)
-        ]
-        db.save_store()
-        return True
-    return False
+    store = get_remote_store()
+    post = store.mirror_row("posts", id=post_id)
+    if not post or post.get("author_id") != author_id:
+        return {"ok": False, "error": "只能刪除自己的貼文"}
+
+    # favorites.target_id has no FK, so the current user's rows must be removed
+    # explicitly (SQL hardening adds a server-side trigger for other users' rows).
+    store.delete("favorites", target_type="post", target_id=post_id)
+
+    result = store.delete("posts", id=post_id, author_id=author_id)
+    if not result.ok:
+        return {"ok": False, "error": result.error, "offline": result.offline}
+
+    store.mirror_remove("posts", id=post_id)
+    store.mirror_remove("comments", post_id=post_id)
+    store.mirror_remove("likes", post_id=post_id)
+    store.mirror_remove("post_photos", post_id=post_id)
+    store.mirror_remove("favorites", target_type="post", target_id=post_id)
+    db.save_store()
+    return {"ok": True, "offline": result.offline, "note": _note(result.offline)}

@@ -4,79 +4,109 @@ Author: Member A (Data Architect)
 
 Implements single like/unlike, trail & post favorites, 1-level comments + 1-layer reply,
 and Q&A answer acceptance (one-time irreversible per question).
+
+Every mutation goes through `RemoteStore`: online writes hit PostgREST first, the
+trigger-maintained counter is read back, and only then is the local mirror
+updated. Offline writes are mirror-only and explicitly flagged so the bridge
+can label them 「離線演示，資料僅存本機」.
 """
 import datetime
 import uuid
 from typing import Any, Dict, List
+
 from app.backend.supabase_client import get_db
+from app.backend.remote_store import get_remote_store, OFFLINE_HINT
 from app.backend.post_service import list_posts
 from app.backend.trail_service import list_trails
 
 
+def _note(offline: bool) -> str:
+    return OFFLINE_HINT if offline else ""
+
+
 def toggle_like(post_id: str, user_id: str) -> Dict[str, Any]:
-    """Toggle like on a post and update redundant like_count immediately."""
+    """Toggle like; `like_count` always comes from a cloud read-back."""
     db = get_db()
-    likes = db.store.setdefault("likes", [])
-    existing = next(
-        (lk for lk in likes if lk.get("post_id") == post_id and lk.get("user_id") == user_id),
-        None,
-    )
-    is_liked = False
+    store = get_remote_store()
+    existing = store.mirror_row("likes", post_id=post_id, user_id=user_id)
+
     if existing:
-        likes.remove(existing)
-        delta = -1
+        result = store.delete("likes", post_id=post_id, user_id=user_id)
+        is_liked = False
+        if result.ok:
+            store.mirror_remove("likes", post_id=post_id, user_id=user_id)
     else:
-        likes.append({"post_id": post_id, "user_id": user_id})
-        delta = 1
+        result = store.insert("likes", {"post_id": post_id, "user_id": user_id})
         is_liked = True
+        if result.ok:
+            store.mirror_add("likes", {"post_id": post_id, "user_id": user_id})
 
-    new_count = 0
-    for p in db.store.get("posts", []):
-        if p["id"] == post_id:
-            p["like_count"] = max(0, int(p.get("like_count", 0)) + delta)
-            new_count = p["like_count"]
-            break
+    if not result.ok:
+        return {
+            "ok": False,
+            "post_id": post_id,
+            "error": result.error,
+            "offline": result.offline,
+        }
 
+    new_count = store.refresh_counter("posts", post_id, "like_count")
+    store.mirror_patch("posts", {"like_count": new_count}, id=post_id)
     db.save_store()
-    return {"post_id": post_id, "is_liked": is_liked, "like_count": new_count}
+    return {
+        "ok": True,
+        "post_id": post_id,
+        "is_liked": is_liked,
+        "like_count": new_count,
+        "offline": result.offline,
+        "note": _note(result.offline),
+    }
 
 
 def toggle_favorite(target_type: str, target_id: str, user_id: str) -> Dict[str, Any]:
-    """Toggle favorite on a trail or post (`target_type` in {'trail', 'post'})."""
+    """Toggle a trail/post favorite and read the authoritative counter back."""
+    if target_type not in ("trail", "post"):
+        return {"ok": False, "error": "不支援的收藏類型"}
     db = get_db()
-    favorites = db.store.setdefault("favorites", [])
-    existing = next(
-        (
-            fv for fv in favorites
-            if fv.get("user_id") == user_id
-            and fv.get("target_type") == target_type
-            and fv.get("target_id") == target_id
-        ),
-        None,
-    )
-    is_fav = False
+    store = get_remote_store()
+    filters = {
+        "user_id": user_id,
+        "target_type": target_type,
+        "target_id": target_id,
+    }
+    existing = store.mirror_row("favorites", **filters)
+
     if existing:
-        favorites.remove(existing)
-        delta = -1
+        result = store.delete("favorites", **filters)
+        is_fav = False
+        if result.ok:
+            store.mirror_remove("favorites", **filters)
     else:
-        favorites.append({"user_id": user_id, "target_type": target_type, "target_id": target_id})
-        delta = 1
+        result = store.insert("favorites", dict(filters))
         is_fav = True
+        if result.ok:
+            store.mirror_add("favorites", dict(filters))
 
-    new_count = 0
-    collection = "trails" if target_type == "trail" else "posts"
-    for item in db.store.get(collection, []):
-        if item["id"] == target_id:
-            item["favorite_count"] = max(0, int(item.get("favorite_count", 0)) + delta)
-            new_count = item["favorite_count"]
-            break
+    if not result.ok:
+        return {
+            "ok": False,
+            "target_type": target_type,
+            "target_id": target_id,
+            "error": result.error,
+            "offline": result.offline,
+        }
 
+    table = "trails" if target_type == "trail" else "posts"
+    new_count = store.refresh_counter(table, target_id, "favorite_count")
+    store.mirror_patch(table, {"favorite_count": new_count}, id=target_id)
     db.save_store()
     return {
+        "ok": True,
         "target_type": target_type,
         "target_id": target_id,
         "is_favorited": is_fav,
         "favorite_count": new_count,
+        "offline": result.offline,
+        "note": _note(result.offline),
     }
 
 
@@ -86,48 +116,76 @@ def add_comment(
     body: str,
     parent_id: str = "",
 ) -> Dict[str, Any]:
-    """Add a 1st-level comment or 1-layer reply (`parent_id`) to a post."""
+    """Add a 1st-level comment or 1-layer reply to a post."""
+    clean_body = body.strip()
+    if not clean_body:
+        return {"ok": False, "error": "評論內容不可空白"}
+
     db = get_db()
+    store = get_remote_store()
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     new_comment = {
         "id": str(uuid.uuid4()),
         "post_id": post_id,
         "author_id": author_id,
         "parent_id": parent_id if parent_id else None,
-        "body": body.strip(),
+        "body": clean_body,
         "is_accepted": False,
         "created_at": now_iso,
     }
-    db.store.setdefault("comments", []).append(new_comment)
-    for p in db.store.get("posts", []):
-        if p["id"] == post_id:
-            p["comment_count"] = int(p.get("comment_count", 0)) + 1
-            break
+    result = store.insert("comments", new_comment)
+    if not result.ok:
+        return {"ok": False, "error": result.error, "offline": result.offline}
+
+    row = dict(result.data or new_comment)
+    store.mirror_add("comments", row)
+    new_count = store.refresh_counter("posts", post_id, "comment_count")
+    store.mirror_patch("posts", {"comment_count": new_count}, id=post_id)
     db.save_store()
-    return new_comment
+    return {
+        "ok": True,
+        "comment": row,
+        "comment_count": new_count,
+        "offline": result.offline,
+        "note": _note(result.offline),
+    }
 
 
-def accept_comment(post_id: str, comment_id: str, current_user_id: str) -> bool:
-    """
-    Mark a comment as the accepted answer for a 'question' post.
-    Only the post author can accept, and once accepted it cannot be undone.
+def accept_comment(post_id: str, comment_id: str, current_user_id: str) -> Dict[str, Any]:
+    """Mark a comment as the accepted answer.
+
+    Only the author of a `question` post may accept, and only once.
     """
     db = get_db()
-    post = next((p for p in db.store.get("posts", []) if p["id"] == post_id), None)
+    store = get_remote_store()
+    post = store.mirror_row("posts", id=post_id)
     if not post or post.get("type") != "question" or post.get("author_id") != current_user_id:
-        return False
+        return {"ok": False, "error": "只有提問作者可採納回答"}
 
     comments = [c for c in db.store.get("comments", []) if c.get("post_id") == post_id]
     if any(c.get("is_accepted", False) for c in comments):
-        return False
+        return {"ok": False, "error": "每題僅限採納一次"}
+    if not any(c.get("id") == comment_id for c in comments):
+        return {"ok": False, "error": "找不到該回答"}
 
-    for c in comments:
-        if c["id"] == comment_id:
-            c["is_accepted"] = True
-            post.setdefault("meta", {})["has_accepted"] = True
-            db.save_store()
-            return True
-    return False
+    result = store.update(
+        "comments",
+        {"is_accepted": True},
+        id=comment_id,
+        post_id=post_id,
+    )
+    if not result.ok:
+        return {"ok": False, "error": result.error, "offline": result.offline}
+
+    store.mirror_patch("comments", {"is_accepted": True}, id=comment_id)
+    # `has_accepted` is derived from the comments table by `_enrich_post`;
+    # no redundant meta flag is written, so mirror and cloud stay identical.
+    db.save_store()
+    return {
+        "ok": True,
+        "offline": result.offline,
+        "note": _note(result.offline),
+    }
 
 
 def get_user_favorites(user_id: str) -> Dict[str, List[Dict[str, Any]]]:

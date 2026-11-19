@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import "../theme"
 import "../components"
 
@@ -11,9 +12,8 @@ Rectangle {
     property string initialTrailId: "trail-01"
     property string currentType: initialType
     property string selectedTrailId: initialTrailId
-    property var selectedPhotos: [
-        "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=800&auto=format&fit=crop&q=80"
-    ]
+    // 不預置任何相片：貼文相片必須來自山友實際點選或輸入。
+    property var selectedPhotos: []
     property var selectedTags: ["風景", "補給"]
 
     signal backRequested()
@@ -60,7 +60,7 @@ Rectangle {
                     MouseArea {
                         anchors.fill: parent
                         onClicked: {
-                            api.publishPost(
+                            var ok = api.publishPost(
                                 root.currentType,
                                 titleInput.text,
                                 bodyInput.text,
@@ -68,7 +68,7 @@ Rectangle {
                                 root.currentType === "question" ? [] : root.selectedPhotos,
                                 root.selectedTags
                             )
-                            root.published()
+                            if (ok) root.published()
                         }
                     }
                 }
@@ -131,64 +131,72 @@ Rectangle {
                     }
                 }
 
-                // Multi-photo selector (Shown for moment type)
+                // 本地相片選擇（發布時上傳至 trail-photos Storage）
                 ColumnLayout {
                     Layout.fillWidth: true
                     visible: root.currentType !== "question"
                     spacing: 8
 
                     Text {
-                        text: "選擇或添加行山相片（將上傳至 trail-photos Storage）"
+                        text: "從本機選擇行山相片（發布時上傳至雲端）"
                         font.pixelSize: Theme.fontCaption
                         font.bold: true
                         color: Theme.textSecondary
                     }
 
-                    RowLayout {
+                    Flow {
                         Layout.fillWidth: true
-                        spacing: 8
+                        spacing: 6
 
                         Repeater {
-                            model: [
-                                { name: "龍脊海景", url: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=800&auto=format&fit=crop&q=80" },
-                                { name: "西貢浪茄", url: "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=800&auto=format&fit=crop&q=80" },
-                                { name: "大東芒草", url: "https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?w=800&auto=format&fit=crop&q=80" }
-                            ]
+                            model: root.selectedPhotos
                             delegate: Rectangle {
-                                Layout.fillWidth: true
-                                height: 74
+                                width: 76
+                                height: 76
                                 radius: 8
                                 clip: true
-                                border.color: root.selectedPhotos.indexOf(modelData.url) !== -1 ? Theme.primaryGreen : "transparent"
-                                border.width: 3
+                                border.color: "#DDDDDD"
+                                border.width: 1
 
                                 Image {
                                     anchors.fill: parent
-                                    source: modelData.url
+                                    source: modelData
                                     fillMode: Image.PreserveAspectCrop
                                     asynchronous: true
                                 }
 
-                                MouseArea {
-                                    anchors.fill: parent
-                                    onClicked: {
-                                        root.selectedPhotos = [modelData.url]
+                                Rectangle {
+                                    anchors.top: parent.top
+                                    anchors.right: parent.right
+                                    width: 22
+                                    height: 22
+                                    radius: 11
+                                    color: "#CC000000"
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "✕"
+                                        color: "#FFFFFF"
+                                        font.pixelSize: 12
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onClicked: {
+                                            var copy = root.selectedPhotos.slice()
+                                            copy.splice(index, 1)
+                                            root.selectedPhotos = copy
+                                        }
                                     }
                                 }
                             }
                         }
                     }
 
-                    TextField {
-                        id: customPhotoPath
+                    PrimaryButton {
                         Layout.fillWidth: true
-                        placeholderText: "或貼上本機圖片路徑 / URL..."
-                        font.pixelSize: 12
-                        padding: 8
-                        background: Rectangle { radius: 8; color: Theme.cardWhite }
-                        onEditingFinished: {
-                            if (text.length > 0) root.selectedPhotos = [text]
-                        }
+                        text: root.selectedPhotos.length > 0
+                              ? "＋ 再添加相片（已選 " + root.selectedPhotos.length + " 張）"
+                              : "＋ 從本機添加相片"
+                        onClicked: fileDialog.open()
                     }
                 }
 
@@ -256,7 +264,7 @@ Rectangle {
                     Layout.fillWidth: true
                     text: "確認發布到社區"
                     onClicked: {
-                        api.publishPost(
+                        var ok = api.publishPost(
                             root.currentType,
                             titleInput.text,
                             bodyInput.text,
@@ -264,10 +272,26 @@ Rectangle {
                             root.currentType === "question" ? [] : root.selectedPhotos,
                             root.selectedTags
                         )
-                        root.published()
+                        if (ok) root.published()
                     }
                 }
             }
+        }
+    }
+
+    // 本地相片選擇器：從本機選取多張圖片，發布時由後端上傳至雲端 Storage。
+    FileDialog {
+        id: fileDialog
+        title: "選擇行山相片"
+        fileMode: FileDialog.OpenFiles
+        nameFilters: ["圖片檔案 (*.jpg *.jpeg *.png *.webp *.bmp)", "所有檔案 (*.*)"]
+        onAccepted: {
+            var copy = root.selectedPhotos.slice()
+            for (var i = 0; i < fileDialog.selectedFiles.length; i++) {
+                var url = fileDialog.selectedFiles[i]
+                if (copy.indexOf(url) === -1) copy.push(url)
+            }
+            root.selectedPhotos = copy
         }
     }
 }

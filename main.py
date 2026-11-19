@@ -11,7 +11,7 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
@@ -39,9 +39,58 @@ def main() -> int:
     main_qml = app_dir / "main.qml"
     engine.load(QUrl.fromLocalFile(str(main_qml)))
 
+    diag_root = (
+        Path(sys.executable).resolve().parent
+        if getattr(sys, "frozen", False)
+        else Path(__file__).resolve().parent
+    )
+
     if not engine.rootObjects():
-        sys.stderr.write("Failed to load QML interface: app/main.qml\n")
+        message = (
+            "HikeHub 啟動失敗：無法載入 QML 介面 app/main.qml\n"
+            f"app_dir = {app_dir}\n"
+            f"frozen = {getattr(sys, 'frozen', False)}\n"
+        )
+        sys.stderr.write(message)
+        try:
+            (diag_root / "HikeHub_startup_error.txt").write_text(
+                message, encoding="utf-8"
+            )
+        except OSError:
+            pass
         return 1
+
+    # Opt-in startup diagnostics for frozen builds (no console window exists).
+    if os.environ.get("HIKEHUB_DIAG") == "1":
+        try:
+            import json
+            from app.backend.supabase_client import get_db, find_env_file
+            meipass = Path(str(getattr(sys, "_MEIPASS", "")))
+            (diag_root / "HikeHub_diag.json").write_text(
+                json.dumps(
+                    {
+                        "frozen": getattr(sys, "frozen", False),
+                        "app_dir": str(app_dir),
+                        "meipass": str(meipass),
+                        "env_file": str(find_env_file() or ""),
+                        "osm_plugin": (
+                            meipass / "PySide6/plugins/geoservices/qtgeoservices_osm.dll"
+                        ).exists(),
+                        "qml_location": (meipass / "PySide6/qml/QtLocation").exists(),
+                        "qml_positioning": (meipass / "PySide6/qml/QtPositioning").exists(),
+                        "status": get_db().get_status_summary(),
+                        "qml_loaded": True,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        # Diagnostic mode terminates by itself; packaging checks need no
+        # external kill and leave no orphan GUI process behind.
+        QTimer.singleShot(1500, app.quit)
 
     return app.exec()
 

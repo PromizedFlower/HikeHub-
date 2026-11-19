@@ -9,6 +9,7 @@ Rectangle {
     color: Theme.bgCream
     property int mainTab: 0   // 0 = 我的動態, 1 = 我的收藏
     property int favSubTab: 0 // 0 = 收藏的路線, 1 = 收藏的動態
+    property string editingPostId: ""
 
     signal postSelected(string postId)
     signal trailSelected(string trailId)
@@ -210,7 +211,9 @@ Rectangle {
                             MouseArea {
                                 anchors.fill: parent
                                 onClicked: {
-                                    api.editMyPost(modelData.id, modelData.title + "（已更新）", modelData.body)
+                                    root.editingPostId = modelData.id
+                                    editTitleField.text = modelData.title || ""
+                                    editBodyField.text = modelData.body || ""
                                 }
                             }
                         }
@@ -318,6 +321,86 @@ Rectangle {
                 message: "尚未收藏任何社區動態"
                 actionText: "去逛逛社區"
                 onActionClicked: api.navigateToTabRequested(3)
+            }
+        }
+    }
+
+    // 真實快速修訂：讓山友輸入新標題與內容，再呼叫 api.editMyPost 落雲端。
+    Rectangle {
+        id: editOverlay
+        anchors.fill: parent
+        visible: root.editingPostId !== ""
+        color: "#B31C1C1E"
+        z: 50
+
+        MouseArea { anchors.fill: parent; onClicked: {} }
+
+        Rectangle {
+            width: Math.min(parent.width - 32, 340)
+            anchors.centerIn: parent
+            radius: Theme.radiusCard
+            color: Theme.cardWhite
+            implicitHeight: editCol.implicitHeight + 28
+
+            ColumnLayout {
+                id: editCol
+                anchors.fill: parent
+                anchors.margins: 14
+                spacing: 10
+
+                Text {
+                    text: "修訂動態"
+                    font.pixelSize: Theme.fontTitle
+                    font.bold: true
+                    color: Theme.primaryGreen
+                }
+
+                TextField {
+                    id: editTitleField
+                    Layout.fillWidth: true
+                    placeholderText: "標題"
+                    font.pixelSize: 13
+                    padding: 8
+                    background: Rectangle {
+                        radius: 8
+                        color: Theme.bgCream
+                        border.color: "#DCDCDC"
+                    }
+                }
+
+                TextArea {
+                    id: editBodyField
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 110
+                    placeholderText: "內容"
+                    font.pixelSize: 13
+                    wrapMode: Text.Wrap
+                    background: Rectangle {
+                        radius: 8
+                        color: Theme.bgCream
+                        border.color: "#DCDCDC"
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    PrimaryButton {
+                        Layout.fillWidth: true
+                        text: "取消"
+                        bgColor: "#8A8A8E"
+                        onClicked: root.editingPostId = ""
+                    }
+                    PrimaryButton {
+                        Layout.fillWidth: true
+                        text: "儲存修訂"
+                        bgColor: Theme.primaryGreen
+                        onClicked: {
+                            api.editMyPost(root.editingPostId, editTitleField.text, editBodyField.text)
+                            root.editingPostId = ""
+                        }
+                    }
+                }
             }
         }
     }
