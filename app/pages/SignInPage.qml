@@ -137,6 +137,8 @@ Rectangle {
                         TextField {
                             id: emailField
                             Layout.fillWidth: true
+                            color: Theme.textPrimary
+                            placeholderTextColor: Theme.textSecondary
                             placeholderText: "例如：ahon@hikehub.hk"
                             text: "ahon@hikehub.hk"
                             font.pixelSize: Theme.fontBody
@@ -160,6 +162,8 @@ Rectangle {
                         TextField {
                             id: passwordField
                             Layout.fillWidth: true
+                            color: Theme.textPrimary
+                            placeholderTextColor: Theme.textSecondary
                             echoMode: TextInput.Password
                             placeholderText: "請輸入密碼"
                             text: "HikeHub2026!"

@@ -78,6 +78,8 @@ Rectangle {
                     TextField {
                         id: homeSearchInput
                         Layout.fillWidth: true
+                        color: Theme.textPrimary
+                        placeholderTextColor: Theme.textSecondary
                         placeholderText: "搜尋路線名或地區（如：龍脊、西貢、大嶼山）"
                         font.pixelSize: 13
                         background: Item {}

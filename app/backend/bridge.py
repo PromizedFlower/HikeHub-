@@ -483,15 +483,24 @@ class ApiBridge(QObject):
         if not uid:
             self.toastMessage.emit("請先登錄後再發布內容")
             return False
-        created = post_service.create_post(
-            author_id=uid,
-            post_type=post_type,
-            title=title,
-            body=body,
-            trail_id=trail_id,
-            photos=list(photos),
-            tags=list(tags),
-        )
+        if not str(title).strip() and not str(body).strip():
+            self.toastMessage.emit("請輸入標題或內容後再發布")
+            return False
+        try:
+            created = post_service.create_post(
+                author_id=uid,
+                post_type=post_type,
+                title=title,
+                body=body,
+                trail_id=trail_id,
+                photos=list(photos),
+                tags=list(tags),
+            )
+        except Exception as exc:
+            # 上傳/寫入流程中的任何未預期異常都必須有明確反饋，不能靜默無反應。
+            from app.backend.remote_store import _safe_error
+            self.toastMessage.emit(f"發布失敗：{_safe_error(exc)}")
+            return False
         if not created.get("ok"):
             self.toastMessage.emit(f"發布失敗：{created.get('error', '未知錯誤')}")
             return False

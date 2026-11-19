@@ -143,10 +143,12 @@ def _resolve_local_path(local_path: str) -> Path:
     return Path(decoded)
 
 
-def upload_photo(local_path: str) -> str:
+def upload_photo(local_path: str, warnings: Optional[List[str]] = None) -> str:
     """
     Upload to Supabase Storage bucket 'trail-photos' when online; otherwise
     copy into a writable local media folder and return a file:// URL.
+    Cloud-upload failures are appended to `warnings` so the caller can tell
+    the user the photo only exists locally instead of failing silently.
     """
     if not local_path:
         return ""
@@ -165,7 +167,8 @@ def upload_photo(local_path: str) -> str:
                     db.client.storage.from_(db.bucket_name).upload(dest_name, f.read())
                 return db.client.storage.from_(db.bucket_name).get_public_url(dest_name)
             except Exception:
-                pass
+                if warnings is not None:
+                    warnings.append("相片上傳雲端失敗，已暫存本機")
         media_dir = get_runtime_root() / "user_uploads"
         media_dir.mkdir(parents=True, exist_ok=True)
         dest_path = media_dir / dest_name
@@ -188,7 +191,8 @@ def create_post(
     """Create a moment/question/trip post in the cloud, plus its photo rows."""
     db = get_db()
     store = get_remote_store()
-    uploaded_urls = [upload_photo(p) for p in (photos or []) if p]
+    upload_warnings: List[str] = []
+    uploaded_urls = [upload_photo(p, upload_warnings) for p in (photos or []) if p]
     meta: Dict[str, Any] = {"tags": tags or ["香港行山"]}
     if trip_meta:
         meta.update(trip_meta)
@@ -212,7 +216,7 @@ def create_post(
     for counter in ("like_count", "comment_count", "favorite_count"):
         row.setdefault(counter, 0)
 
-    warning = ""
+    warning = "；".join(dict.fromkeys(upload_warnings))
     accepted_urls: List[str] = []
     for url in uploaded_urls:
         photo_payload = {

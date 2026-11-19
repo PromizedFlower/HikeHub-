@@ -10,6 +10,7 @@ Rectangle {
     property int mainTab: 0   // 0 = 我的動態, 1 = 我的收藏
     property int favSubTab: 0 // 0 = 收藏的路線, 1 = 收藏的動態
     property string editingPostId: ""
+    property string pendingDeleteId: ""
 
     signal postSelected(string postId)
     signal trailSelected(string trailId)
@@ -230,7 +231,7 @@ Rectangle {
                             }
                             MouseArea {
                                 anchors.fill: parent
-                                onClicked: api.deleteMyPost(modelData.id)
+                                onClicked: root.pendingDeleteId = modelData.id
                             }
                         }
                     }
@@ -358,6 +359,8 @@ Rectangle {
                 TextField {
                     id: editTitleField
                     Layout.fillWidth: true
+                    color: Theme.textPrimary
+                    placeholderTextColor: Theme.textSecondary
                     placeholderText: "標題"
                     font.pixelSize: 13
                     padding: 8
@@ -371,6 +374,8 @@ Rectangle {
                 TextArea {
                     id: editBodyField
                     Layout.fillWidth: true
+                    color: Theme.textPrimary
+                    placeholderTextColor: Theme.textSecondary
                     Layout.preferredHeight: 110
                     placeholderText: "內容"
                     font.pixelSize: 13
@@ -398,6 +403,62 @@ Rectangle {
                         onClicked: {
                             api.editMyPost(root.editingPostId, editTitleField.text, editBodyField.text)
                             root.editingPostId = ""
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 刪除確認浮層：刪除不可復原（雲端級聯清除留言/按讚/相片），先經二次確認。
+    Rectangle {
+        anchors.fill: parent
+        visible: root.pendingDeleteId !== ""
+        color: "#B31C1C1E"
+        z: 60
+
+        Rectangle {
+            width: parent.width - 56
+            height: delCol.implicitHeight + 40
+            radius: Theme.radiusCard
+            color: Theme.cardWhite
+            anchors.centerIn: parent
+
+            ColumnLayout {
+                id: delCol
+                anchors.fill: parent
+                anchors.margins: 20
+                spacing: 14
+
+                Text {
+                    text: "確認刪除這條貼文？"
+                    font.pixelSize: Theme.fontBody
+                    font.bold: true
+                    color: Theme.textPrimary
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "刪除後雲端會一併清除相關留言、按讚與相片，且無法復原。"
+                    font.pixelSize: Theme.fontCaption
+                    color: Theme.textSecondary
+                    wrapMode: Text.Wrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    PrimaryButton {
+                        Layout.fillWidth: true
+                        text: "取消"
+                        bgColor: "#8A8A8E"
+                        onClicked: root.pendingDeleteId = ""
+                    }
+                    PrimaryButton {
+                        Layout.fillWidth: true
+                        text: "確認刪除"
+                        bgColor: Theme.accentOrange
+                        onClicked: {
+                            api.deleteMyPost(root.pendingDeleteId)
+                            root.pendingDeleteId = ""
                         }
                     }
                 }

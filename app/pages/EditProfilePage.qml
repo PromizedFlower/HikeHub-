@@ -57,6 +57,8 @@ Rectangle {
             TextField {
                 id: nickInput
                 Layout.fillWidth: true
+                color: Theme.textPrimary
+                placeholderTextColor: Theme.textSecondary
                 text: api.currentUser.nickname || ""
                 font.pixelSize: Theme.fontBody
                 padding: 10
@@ -72,6 +74,8 @@ Rectangle {
             TextArea {
                 id: bioInput
                 Layout.fillWidth: true
+                color: Theme.textPrimary
+                placeholderTextColor: Theme.textSecondary
                 Layout.preferredHeight: 90
                 text: api.currentUser.bio || ""
                 font.pixelSize: 14
@@ -89,6 +93,8 @@ Rectangle {
             TextField {
                 id: avatarInput
                 Layout.fillWidth: true
+                color: Theme.textPrimary
+                placeholderTextColor: Theme.textSecondary
                 text: api.currentUser.avatar_url || ""
                 font.pixelSize: 12
                 padding: 10

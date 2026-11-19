@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QColor, QGuiApplication, QPalette
 from PySide6.QtQml import QQmlApplicationEngine
 
 from app.backend.bridge import ApiBridge
@@ -29,6 +29,16 @@ def main() -> int:
     app = QGuiApplication(sys.argv)
     app.setApplicationName("行山腳 HikeHub")
     app.setOrganizationName("COMP7510-HikeHub")
+
+    # Basic 樣式控件的文字色跟隨系統調色板；Windows 深色模式下會變白導致
+    # 白色輸入框內文字不可見。此處固定為深色主題調色板（與 Theme.qml 一致）。
+    palette = app.palette()
+    dark_text = QColor("#1C1C1E")
+    palette.setColor(QPalette.ColorRole.Text, dark_text)
+    palette.setColor(QPalette.ColorRole.WindowText, dark_text)
+    palette.setColor(QPalette.ColorRole.ButtonText, dark_text)
+    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#8A8A8E"))
+    app.setPalette(palette)
 
     engine = QQmlApplicationEngine()
     api_bridge = ApiBridge()

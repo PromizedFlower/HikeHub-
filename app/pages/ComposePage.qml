@@ -104,6 +104,8 @@ Rectangle {
                 TextField {
                     id: titleInput
                     Layout.fillWidth: true
+                    color: Theme.textPrimary
+                    placeholderTextColor: Theme.textSecondary
                     placeholderText: root.currentType === "question"
                                      ? "輸入問題標題（如：請問西灣亭村巴尾班車幾點？）"
                                      : "輸入一句話標題（如：今日龍脊秋風超爽！）"
@@ -118,6 +120,8 @@ Rectangle {
                 TextArea {
                     id: bodyInput
                     Layout.fillWidth: true
+                    color: Theme.textPrimary
+                    placeholderTextColor: Theme.textSecondary
                     Layout.preferredHeight: 120
                     placeholderText: root.currentType === "question"
                                      ? "詳細描述你想請教山友嘅路線、交通、補給或天氣問題..."

@@ -211,6 +211,8 @@ Rectangle {
                     TextField {
                         id: hikePhotoField
                         Layout.fillWidth: true
+                        color: Theme.textPrimary
+                        placeholderTextColor: Theme.textSecondary
                         placeholderText: "貼上相片網址或本機檔案路徑（選填）"
                         font.pixelSize: 12
                         padding: 8
@@ -318,6 +320,8 @@ Rectangle {
                         TextField {
                             id: settlementNoteField
                             Layout.fillWidth: true
+                            color: Theme.textPrimary
+                            placeholderTextColor: Theme.textSecondary
                             placeholderText: "寫句今日行山感想（如：山頂海風超爽，士多豆腐花必食！）"
                             font.pixelSize: 13
                             padding: 10

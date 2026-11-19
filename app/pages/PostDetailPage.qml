@@ -352,6 +352,8 @@ Rectangle {
                 TextField {
                     id: commentInput
                     Layout.fillWidth: true
+                    color: Theme.textPrimary
+                    placeholderTextColor: Theme.textSecondary
                     placeholderText: root.replyToNickname !== ""
                                      ? ("回覆 @" + root.replyToNickname + "（點擊發送）...")
                                      : (api.currentPost.type === "question" ? "撰寫回答幫下山友..." : "留低你嘅評論...")

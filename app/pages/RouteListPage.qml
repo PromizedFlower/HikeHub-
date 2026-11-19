@@ -44,6 +44,8 @@ Rectangle {
                 TextField {
                     id: kwField
                     Layout.fillWidth: true
+                    color: Theme.textPrimary
+                    placeholderTextColor: Theme.textSecondary
                     placeholderText: "搜尋山徑名稱、補給點或地區..."
                     font.pixelSize: 13
                     background: Item {}

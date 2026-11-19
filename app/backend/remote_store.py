@@ -99,8 +99,11 @@ class RemoteStore:
                     error="雲端未寫入任何資料（可能被權限規則拒絕）",
                 )
             return WriteResult(ok=True, data=rows[0])
-        except Exception as exc:
-            return WriteResult(ok=False, error=_safe_error(exc))
+        except Exception:
+            # 網路中斷等暫時性故障：內容不靜默丟失，改存本機鏡像，
+            # 並以 offline=True 明確標示「離線演示，資料僅存本機」。
+            # （RLS 拒絕不會拋異常，仍走上方空結果的明確失敗路徑。）
+            return WriteResult(ok=True, offline=True, data=dict(payload))
 
     def update(
         self, table: str, payload: Dict[str, Any], **eq_filters: Any
