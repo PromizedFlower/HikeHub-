@@ -16,6 +16,13 @@ from app.backend.supabase_client import get_db
 from app.backend.workers import run_in_background
 
 
+def _qml_text(value: Any) -> str:
+    """Normalise QML values to plain str (QUrl needs toString, not str())."""
+    if hasattr(value, "toString"):  # PySide6.QtCore.QUrl
+        return str(value.toString())
+    return str(value or "")
+
+
 class ApiBridge(QObject):
     # Auth & Navigation Signals
     authChanged = Signal()
@@ -493,8 +500,8 @@ class ApiBridge(QObject):
                 title=title,
                 body=body,
                 trail_id=trail_id,
-                photos=list(photos),
-                tags=list(tags),
+                photos=[_qml_text(p) for p in photos],
+                tags=[_qml_text(t) for t in tags],
             )
         except Exception as exc:
             # 上傳/寫入流程中的任何未預期異常都必須有明確反饋，不能靜默無反應。

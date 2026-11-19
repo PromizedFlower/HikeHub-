@@ -150,6 +150,11 @@ def upload_photo(local_path: str, warnings: Optional[List[str]] = None) -> str:
     Cloud-upload failures are appended to `warnings` so the caller can tell
     the user the photo only exists locally instead of failing silently.
     """
+    # QML FileDialog 傳入的是 QUrl；str(QUrl) 會得到 Python 表示式而非路徑。
+    if hasattr(local_path, "toString"):
+        local_path = str(local_path.toString())
+    else:
+        local_path = str(local_path or "")
     if not local_path:
         return ""
     if local_path.startswith("http://") or local_path.startswith("https://"):
