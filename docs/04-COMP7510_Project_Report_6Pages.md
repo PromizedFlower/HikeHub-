@@ -1,7 +1,7 @@
 # COMP 7510 Group Project Report · 行山腳 HikeHub
 
 > **專案名稱**：行山腳 HikeHub —— 香港行山路線結構化與山友打卡互動應用  
-> **技術框架**：Python 3.11 + PySide6 (Qt 6.9) + Qt Quick (QML) + QtLocation (OSM) + Supabase (Postgres / Auth / Storage)  
+> **技術框架**：Python 3.11+（實測 3.13） + PySide6 (Qt 6.9+，實測 6.12) + Qt Quick (QML) + QtLocation (OSM) + Supabase (Postgres / Auth / Storage)  
 > **交付形態**：390 × 844 手機視口桌面程式（`python main.py` 開發運行 / PyInstaller 打包 `HikeHub.exe` 免安裝雙擊即跑）
 
 ---

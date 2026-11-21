@@ -5,7 +5,7 @@ Project: COMP 7510 Group Project
 Author: Member B (App Framework & Auth)
 
 Viewport: Mobile aspect ratio 390 x 844 (iPhone 14 logical resolution)
-Framework: Python + PySide6 (Qt 6.9) + Qt Quick (QML)
+Framework: Python + PySide6 (Qt 6.9+) + Qt Quick (QML)
 """
 import os
 import sys

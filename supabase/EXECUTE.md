@@ -64,7 +64,7 @@
 
 - 貼上 `tests/verify_db.sql` 全文 → Run，逐段確認：
   - 各表行數：profiles 6 / trails 10 / trail_segments 25 / checkpoints 22 / posts 6 /
-    post_photos 5 / comments 6 / likes 12 / favorites 8（實測值）。
+    post_photos 8 / comments 6 / likes 12 / favorites 8（實測值）。
   - 計數一致性（段落 3–6）：**應全部回傳 0 行**（表示 stored = actual）。
   - RLS（段落 7）：9 張表 `rls_enabled` 皆為 `t`。
   - 外鍵孤立（段落 8）：全部 0 行。

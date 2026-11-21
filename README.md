@@ -1,35 +1,49 @@
 # 行山腳 HikeHub · 香港行山路線與山友社群桌面移動應用
 
 > **課程項目**：COMP 7510 Group Project · 行山腳 HikeHub  
-> **技術棧**：Python 3.11+ · PySide6 (Qt 6.9) · Qt Quick (QML) · QtLocation (OSM) · Supabase (Postgres + Auth + Storage)  
+> **技術棧**：Python 3.11+（實測 3.13） · PySide6 (Qt 6.9+，實測 6.12) · Qt Quick (QML) · QtLocation (OSM) · Supabase (Postgres + Auth + Storage)  
 > **視口規格**：390 × 844（iPhone 14 邏輯分辨率），底部 5 Tab 導航（首頁 / 線路 / 出發 / 社區 / 我的）
 
 ---
 
-## 一、三步快速啟動（開發期）
+## 一、兩種啟動方式
+
+### 方式 A：雙擊 `HikeHub.exe`（交付 / 驗收，免安裝任何環境）
+
+- 適用：助教驗收、發給沒有 Python 環境的成員。
+- 操作：直接**雙擊 `dist/HikeHub.exe`** 即可啟動，無需安裝 Python、無需 pip、也**無需手動放置 `.env`**（公開配置已打包進 exe）。
+- 如需覆蓋雲端配置，可另將 `.env` 放到 `HikeHub.exe` 同目錄，程式會優先讀取（回退鏈：exe 同目錄 `.env` → 內置 `.env` → 內置 `.env.example`）。
+- 產物為 64-bit Windows one-file（約 193 MB，PyInstaller 6.22.x / PySide6 6.12）。
+
+### 方式 B：源碼 Demo 啟動（開發期，雙擊 `啟動Demo.bat` 或命令行）
+
+適用：本機開發調試、需要改代碼後即時生效。
 
 ```bash
-# 1. 安裝依賴
+# 1. 安裝 Python 3.11+（實測 3.13）並在安裝時勾選 Add to PATH
+# 2. 安裝依賴
 pip install -r requirements.txt
 
-# 2. 複製環境變數（倉庫已附帶可用於評分的 SUPABASE_URL 與 SUPABASE_ANON_KEY）
-cp .env.example .env
+# 3. 準備環境變數（倉庫已附帶可用於評分的 SUPABASE_URL 與 SUPABASE_ANON_KEY，
+#    .env.example 內即為可直接使用的真實公開值；僅在自建專案時才需改填）
+copy .env.example .env
 
-# 3. 啟動應用
+# 4. 啟動（二選一）
 python main.py
+# 或直接雙擊「啟動Demo.bat」（其內部即執行 python main.py）
 ```
 
 ---
 
-## 二、打包與運行 Windows 執行檔（交付期）
+## 二、打包 Windows 執行檔
 
 ```bash
 # 使用預置的 build.spec 打包（已顯式包含 app/ QML 資源與 QtLocation/QtPositioning 插件）
-pyinstaller build.spec --noconfirm
+pyinstaller build.spec --noconfirm --clean
 ```
 
 - 產出位置：`dist/HikeHub.exe`
-- 助教驗收方式：將 `.env.example` 重命名為 `.env` 放在 `HikeHub.exe` 同目錄下，**在未安裝 Python 的 Windows 機器上雙擊 `HikeHub.exe` 即可直接啟動**。
+- 分發方式：**只發 `HikeHub.exe` 這一個檔案**即可；對方雙擊即用，無需任何依賴或額外檔案。
 
 ---
 
@@ -50,9 +64,9 @@ pyinstaller build.spec --noconfirm
 
 ## 四、Supabase 資料庫初始化說明
 
-1. **環境配置（新建獨立 HikeHub 專案）**：
-   - 在 Supabase 雲端新建專案後，於 `Project Settings → API` 複製 `Project URL` 與 `anon public key`，
-     填寫至 `.env.example`（已改為佔位符），再 `cp .env.example .env`。
+1. **環境配置（新建獨立 HikeHub 專案時才需改動）**：
+   - 倉庫的 `.env.example` 已內含**可直接使用的真實公開值**（`SUPABASE_URL` 與 anon public key，前端公開安全）。
+   - 僅當你想改用「自己新建的 Supabase 專案」時，才需於 `Project Settings → API` 複製新 `Project URL` 與 `anon public key` 填入 `.env.example`，再 `copy .env.example .env`。
    - `SUPABASE_BUCKET`: `trail-photos`
    - 詳細建庫與匯入步驟見 **`supabase/EXECUTE.md`**。
 2. **先建立 6 個可登入測試帳號**：`supabase/create_auth_users.ps1`（Auth Admin API）。
@@ -63,7 +77,7 @@ pyinstaller build.spec --noconfirm
    - `supabase/policies.sql`（啟用 RLS 策略與 Storage bucket 權限）
    - `supabase/seed.sql`（寫入 6 個 Profile、10 條香港經典行山路線含折線座標 `path`、25 個路段、22 個打卡點及社區種子貼文）
 4. 驗證：於 SQL Editor 執行 `tests/verify_db.sql`，確認 9 張表行數、計數一致性與 RLS 讀取通過。
-3. **雙重連線韌性設計**：`app/backend/supabase_client.py` 啟動時會自動校驗 `.env` 中的 URL 與 JWT 簽名；若缺失 `.env` 會在登錄頁明確提示「請檢查 .env 配置」；若教室/評分環境網路受限或遠端未建表，會自動無縫切換至與 `seed.sql` 完全一致的本地持久化鏡像，確保所有頁面、篩選、打卡、發帖、點讚、評論與問答採納 100% 可交互。
+5. **雙重連線韌性設計**：`app/backend/supabase_client.py` 啟動時會自動校驗 `.env` 中的 URL 與 JWT 簽名；若缺失 `.env` 會在登錄頁明確提示「請檢查 .env 配置」；若教室/評分環境網路受限或遠端未建表，會自動無縫切換至與 `seed.sql` 完全一致的本地持久化鏡像，確保所有頁面、篩選、打卡、發帖、點讚、評論與問答採納 100% 可交互。
 
 ---
 
