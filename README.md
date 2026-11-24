@@ -94,7 +94,22 @@ python tests/test_06_location_source.py
 
 ---
 
-## 6. Team Contributions (English) — Scope, Modules, Collaboration Interfaces & Deliverables
+## 六、四人分工與署名產出（設計 / 程式 / 報告）
+
+> 以下為**中文原版**（內容保持不變），其後附上對應的**英文版（English Version）**，兩者並列僅版本語言不同，分工內容相互對應。
+
+| 成員 | 角色 | 負責代碼與設計產出 | 報告主筆章節 |
+|---|---|---|---|
+| **Member A** | 數據架構師 | `supabase/*.sql`、`supabase_client.py`、`trail/post/social/location_service.py`、`models.py`、`tests/*`、`build.spec`、`docs/erd.png` | §3 數據庫設計、§4 后端服務層 |
+| **Member B** | 應用框架與帳號 | `main.py`、`app/main.qml`、`Theme.qml`、`bridge.py`、`auth_service.py`、`workers.py`、`SignInPage.qml`、`app/components/*` | §1 專案背景與四層架構 |
+| **Member C** | 路線、出發與地圖 | `HomePage.qml`、`RouteListPage.qml`、`RouteDetailPage.qml`、`StartPage.qml`（OSM地圖+軌跡+雙源定位）、`ComposePage.qml` | §4 路線與定位雙源實作 |
+| **Member D** | 社群互動與個人 | `CommunityPage.qml`、`PostDetailPage.qml`（點讚/收藏/評論/採納）、`ProfilePage.qml`、`EditProfilePage.qml`、`docs/flow.png` | §2 功能規格、§5 介面流程、§6 測試與總結 |
+
+---
+
+## 6. Team Contributions — English Version (corresponding to Section 六 above)
+
+> This is the **English version** of the Chinese table above, kept side by side with the unchanged original. It expands each member into scope, module ownership, collaboration interfaces and deliverables, while staying consistent with the Chinese content.
 
 > **Ownership rule — no overlap, no gaps:** every tracked source / configuration file has exactly *one* owner. A "collaboration interface" describes the contract that other members call; it is **not** shared file ownership. Shared documents (`README.md`, `docs/01`, `02`, `03`, `05`, `留档.md`, the architecture DOCX) are maintained jointly by all four members.
 

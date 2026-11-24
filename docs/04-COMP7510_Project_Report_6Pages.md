@@ -6,7 +6,22 @@
 
 ---
 
-## Full Team Contribution Matrix (Design / Programming / Interfaces / Deliverables)
+## 四人全員貢獻署名總表（設計 / 程式 / 報告三維全覆蓋）
+
+> 以下為**中文原版**（內容保持不變），其後附上對應的**英文版（Full Team Contribution Matrix — English Version）**，兩者並列僅版本語言不同，分工內容相互對應。
+
+| 成員 | 角色定位 | 系統與介面設計產出（Design） | 核心程式實作產出（Programming） | 報告主筆章節（Report） |
+|---|---|---|---|---|
+| **Member A** | 數據架構師 | 9 張表 Schema 設計、單表多態 `posts` 模型、ERD 圖（`docs/erd.png`）、RLS 安全策略設計 | `supabase/schema.sql`, `policies.sql`, `seed.sql`, `supabase_client.py`, `trail/post/social_service.py`, `models.py`, `tests/test_01..04.py`, `build.spec` | **§3** 資料庫架構設計<br>**§4.1** 後端服務層與觸發器 |
+| **Member B** | 應用框架與帳號 | 四層單向依賴架構、6 色票與 3 字級規範（`Theme.qml`）、5 Tab 獨立 StackView 導航設計 | `main.py`, `app/main.qml`, `bridge.py`, `auth_service.py`, `workers.py`, `SignInPage.qml`, `app/components/*`（13 個共用元件） | **§1** 專案背景與四層系統架構 |
+| **Member C** | 路線與出發地圖 | 首頁/線路/出發三態與發布頁 Wireframe、系統與模擬定位雙源狀態機設計 | `HomePage.qml`, `RouteListPage.qml`, `RouteDetailPage.qml`, `StartPage.qml`, `ComposePage.qml`, `location_service.py`, `tests/test_05..06.py` | **§4.2** OSM 地圖軌跡與雙源定位實作 |
+| **Member D** | 社群互動與個人 | 社區動態瀑布流/問答採納狀態機、個人收藏雙子 Tab 設計、頁面流程圖（`docs/flow.png`） | `CommunityPage.qml`, `PostDetailPage.qml`, `ProfilePage.qml`, `EditProfilePage.qml`、點讚/收藏/評論/採納互動全鏈路 | **§2** 功能規格與資訊架構<br>**§5** 介面流程<br>**§6** 測試與 Demo 腳本 |
+
+---
+
+## Full Team Contribution Matrix — English Version (corresponding to the Chinese table above)
+
+> This is the **English version** of the Chinese table above, kept side by side with the unchanged original. It expands each member into role/scope, design output, owned modules, collaboration interfaces and deliverables, while staying consistent with the Chinese content.
 
 > Ownership rule: every tracked source / configuration file has exactly **one** owner. A "collaboration interface" is a contract other members call, not shared file ownership. Jointly maintained documents: `README.md`, `docs/01`, `02`, `03`, `05`, `留档.md`, the architecture DOCX.
 
